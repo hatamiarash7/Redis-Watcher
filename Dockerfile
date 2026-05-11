@@ -1,8 +1,5 @@
-
-# syntax=docker/dockerfile:1.7
-
 # ----- Builder ----------------------------------------------------------------
-FROM golang:1.23-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -20,10 +17,10 @@ RUN go mod download
 COPY . .
 
 RUN go build -trimpath -ldflags "-s -w \
-      -X main.version=${VERSION} \
-      -X main.commit=${COMMIT} \
-      -X main.date=${BUILD_DATE}" \
-      -o /out/redis-watcher ./cmd/redis-watcher
+  -X main.version=${VERSION} \
+  -X main.commit=${COMMIT} \
+  -X main.date=${BUILD_DATE}" \
+  -o /out/redis-watcher ./cmd/redis-watcher
 
 # ----- Runtime ----------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
