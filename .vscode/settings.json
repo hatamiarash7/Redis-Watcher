@@ -1,0 +1,25 @@
+{
+  "cSpell.words": [
+    "distroless",
+    "getsentry",
+    "GOFLAGS",
+    "GOLINT",
+    "healthz",
+    "natefinch",
+    "nonroot",
+    "nosec",
+    "nsec",
+    "perr",
+    "promhttp",
+    "pushgateway",
+    "readyz",
+    "Reconnections",
+    "sdscatrepr",
+    "sentryx",
+    "SETUSER",
+    "SLOWLOG",
+    "trimpath",
+    "XGROUP",
+    "XINFO"
+  ]
+}
