@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hatamiarash7/redis-watcher/internal/event"
@@ -134,8 +133,6 @@ func New(ignoredCommands []string, trackSourceIP bool, version, commit string) *
 		r.AlertSendErrors,
 		r.EventsProcessed,
 		r.BuildInfo,
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		collectors.NewGoCollector(),
 	)
 	r.BuildInfo.WithLabelValues(version, commit).Set(1)
 	return r
