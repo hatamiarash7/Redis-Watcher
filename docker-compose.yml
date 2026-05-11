@@ -2,13 +2,13 @@ name: redis-watcher
 
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:8
     container_name: rw-redis
     restart: unless-stopped
     command: >-
       redis-server
       --unixsocket /var/run/redis/redis.sock
-      --unixsocketperm 770
+      --unixsocketperm 777
       --bind 0.0.0.0
       --port 6379
       --save 60 1
@@ -16,7 +16,7 @@ services:
     user: redis
     volumes:
       - redis-data:/data
-      - redis-sock:/var/run/redis
+      - ./redis-socket:/var/run/redis
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -24,6 +24,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 5s
 
   redis-watcher:
     build:
@@ -32,6 +33,7 @@ services:
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-local}
         BUILD_DATE: ${BUILD_DATE:-unknown}
+    image: redis-watcher:${VERSION:-dev}
     container_name: rw-watcher
     restart: unless-stopped
     depends_on:
@@ -39,14 +41,14 @@ services:
         condition: service_healthy
     volumes:
       - ./config.yaml:/etc/redis-watcher/config.yaml:ro
-      - redis-sock:/var/run/redis:ro
+      - ./redis-socket:/var/run/redis:ro
       - audit-logs:/var/log/redis-watcher
     ports:
       - "9100:9100"
     environment:
       REDIS_WATCHER_CONFIG: /etc/redis-watcher/config.yaml
+      REDIS_WATCHER_REDIS_ADDRESS: /var/run/redis/redis.sock
 
 volumes:
   redis-data:
-  redis-sock:
   audit-logs:

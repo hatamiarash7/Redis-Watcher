@@ -1,5 +1,6 @@
 {
   "cSpell.words": [
+    "appendonly",
     "backpressure",
     "distroless",
     "FLUSHALL",
@@ -25,6 +26,8 @@
     "SETUSER",
     "SLOWLOG",
     "trimpath",
+    "unixsocket",
+    "unixsocketperm",
     "XGROUP",
     "XINFO"
   ]

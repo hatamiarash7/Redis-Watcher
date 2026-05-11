@@ -84,7 +84,9 @@ docker: ## Build the Docker image.
 
 .PHONY: docker-compose-up
 docker-compose-up: ## Start the docker-compose stack (Redis + watcher).
-	$(DOCKER) compose up -d --build
+	mkdir -p ./redis-socket
+	chmod 777 ./redis-socket
+	$(DOCKER) compose up -d
 
 .PHONY: docker-compose-down
 docker-compose-down: ## Stop the docker-compose stack.

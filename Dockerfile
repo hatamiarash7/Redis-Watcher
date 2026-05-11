@@ -7,6 +7,7 @@ ARG BUILD_DATE=unknown
 
 ENV CGO_ENABLED=0 GOFLAGS=-mod=readonly
 
+# hadolint ignore=DL3018
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
