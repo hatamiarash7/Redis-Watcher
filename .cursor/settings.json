@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "redis-development": {
+      "enabled": true
+    },
+    "sentry": {
+      "enabled": true
+    }
+  }
+}

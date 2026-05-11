@@ -1,0 +1,64 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocyclo
+    - gosec
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+    - bodyclose
+    - nilerr
+    - prealloc
+    - copyloopvar
+    - errorlint
+
+  settings:
+    gocyclo:
+      min-complexity: 20
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: var-naming
+        - name: package-comments
+          disabled: true
+    gosec:
+      excludes:
+        - G104 # handled by errcheck
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - gocyclo
+          - errcheck
+          - unparam
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/hatamiarash7/redis-watcher
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

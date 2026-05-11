@@ -1,0 +1,157 @@
+# =============================================================================
+# Redis Watcher - Example Configuration
+# -----------------------------------------------------------------------------
+# Copy this file to `config.yaml` and adjust to your environment.
+# All values may also be overridden via environment variables using the
+# `REDIS_WATCHER_*` prefix (see README).
+# =============================================================================
+
+# ---- Redis connection ---------------------------------------------------------
+redis:
+  # "unix" or "tcp"
+  network: unix
+  # For "unix": path to redis socket. For "tcp": host:port
+  address: /var/run/redis/redis.sock
+  # Optional auth
+  username: ""
+  password: ""
+  # Connection / read timeouts
+  dial_timeout: 5s
+  read_timeout: 0s          # 0 disables read deadline (recommended for MONITOR)
+  # Reconnect backoff
+  backoff_min: 1s
+  backoff_max: 30s
+
+# ---- Logging ------------------------------------------------------------------
+log:
+  level: info               # debug | info | warn | error
+  format: json              # json | text
+  # Optional log file (process logs, NOT audit logs). Stderr if empty.
+  file: ""
+
+# ---- Audit event outputs ------------------------------------------------------
+# Each parsed MONITOR event is sent to every enabled output.
+outputs:
+  - type: stdout
+    enabled: false
+    format: json            # json | text
+
+  - type: file
+    enabled: true
+    path: /var/log/redis-watcher/audit.log
+    format: json
+    rotation:
+      max_size_mb: 100      # rotate when file reaches this size
+      max_backups: 5        # number of rotated files to keep
+      max_age_days: 30      # max age in days
+      compress: true        # gzip rotated files
+
+  - type: udp
+    enabled: false
+    address: 127.0.0.1:24224  # e.g. Fluent Bit / Fluentd forward
+    format: json
+    timeout: 2s
+
+  - type: tcp
+    enabled: false
+    address: 127.0.0.1:24224
+    format: json
+    timeout: 5s
+    keepalive: 30s
+
+# ---- Prometheus metrics endpoint ---------------------------------------------
+metrics:
+  enabled: true
+  address: ":9100"
+  path: /metrics
+  # Optional list of command names (uppercase) to NOT track per-command (to limit
+  # cardinality if needed). Empty = track all.
+  ignored_commands: []
+  # Track per-source-IP metrics (can have high cardinality on busy servers).
+  track_source_ip: true
+
+# ---- Alerting -----------------------------------------------------------------
+alerts:
+  enabled: true
+  # Suspicious commands (uppercase, matched against parsed command name).
+  # The subcommand may be matched with patterns like "CLIENT KILL".
+  suspicious_commands:
+    - FLUSHDB
+    - FLUSHALL
+    - CONFIG
+    - ACL
+    - KEYS
+    - EVAL
+    - EVALSHA
+    - SCRIPT
+    - SHUTDOWN
+    - DEBUG
+    - CLIENT
+    - MODULE
+    - REPLICAOF
+    - SLAVEOF
+    - MIGRATE
+    - SAVE
+    - BGSAVE
+    - BGREWRITEAOF
+    - FUNCTION
+
+  # Optional regex (matched on the full reconstructed command line, case
+  # insensitive). Used in addition to suspicious_commands.
+  patterns: []
+
+  # Optional allowlist of source IPs for which alerts are suppressed.
+  ignored_source_ips: []
+
+  # Rate-limit: at most `max_alerts` alerts per `window` per (command, ip) tuple.
+  rate_limit:
+    enabled: true
+    window: 60s
+    max_alerts: 5
+
+  # Notification channels
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""              # may be a user id or "@channel"
+    timeout: 5s
+
+  webhook:
+    enabled: false
+    url: ""
+    method: POST
+    timeout: 5s
+    headers:
+      Content-Type: application/json
+      # Authorization: "Bearer ..."
+
+  pushgateway:
+    enabled: false
+    url: http://pushgateway:9091
+    job: redis-watcher
+    timeout: 5s
+    # Additional grouping labels pushed with the metric
+    labels:
+      instance: redis-prod-1
+
+# ---- Sentry (error tracking) --------------------------------------------------
+sentry:
+  enabled: false
+  dsn: ""
+  environment: production
+  release: ""
+  sample_rate: 1.0
+  traces_sample_rate: 0.0
+  # Process events at this level or above. Errors are always sent.
+  attach_stacktrace: true
+
+# ---- Internal pipeline tuning -------------------------------------------------
+pipeline:
+  # Buffer for raw parsed events between MONITOR consumer and dispatcher.
+  event_buffer: 10000
+  # Per-consumer (each output / alerter) buffer.
+  consumer_buffer: 2000
+  # If a consumer's buffer is full, drop the event (true) or block (false).
+  # `true` is recommended in production to avoid back-pressuring MONITOR which
+  # could cause Redis to disconnect us.
+  drop_on_full: true
