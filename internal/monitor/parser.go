@@ -83,7 +83,6 @@ func Parse(line string) (*event.Event, error) {
 		Source:    src,
 		Command:   cmd,
 		Args:      args[1:],
-		Raw:       line,
 	}
 	if _, ok := commandsWithSubcommand[cmd]; ok && len(ev.Args) > 0 {
 		ev.Subcommand = strings.ToUpper(ev.Args[0])
@@ -164,9 +163,8 @@ func parseBracket(rest string) (int, event.Source, string, error) {
 	if err != nil {
 		return 0, event.Source{}, "", fmt.Errorf("invalid db %q: %w", body[:sp], err)
 	}
-	addr := body[sp+1:]
-	ip, port := splitHostPort(addr)
-	return db, event.Source{Raw: addr, IP: ip, Port: port}, remainder, nil
+	ip, port := splitHostPort(body[sp+1:])
+	return db, event.Source{IP: ip, Port: port}, remainder, nil
 }
 
 // splitHostPort splits "host:port" handling IPv6 "[::1]:port" and

@@ -9,8 +9,6 @@ import (
 
 // Source represents the originator of a Redis command observed via MONITOR.
 type Source struct {
-	// Raw is the address as printed by Redis, e.g. "127.0.0.1:54302".
-	Raw  string `json:"raw"`
 	IP   string `json:"ip"`
 	Port string `json:"port"`
 }
@@ -29,9 +27,6 @@ type Event struct {
 	// unescaped). Args does NOT include the command name itself; it DOES
 	// include the subcommand if any.
 	Args []string `json:"args,omitempty"`
-	// Raw is the original line received from Redis with the leading '+'
-	// stripped. Useful for debugging and full-fidelity outputs.
-	Raw string `json:"raw,omitempty"`
 }
 
 // FullCommand returns the canonical "COMMAND [SUBCOMMAND]" string used for

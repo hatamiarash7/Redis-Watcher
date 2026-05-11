@@ -20,7 +20,7 @@ func sampleEvent() *event.Event {
 	return &event.Event{
 		Timestamp: time.Unix(1700000000, 0).UTC(),
 		DB:        0,
-		Source:    event.Source{Raw: "127.0.0.1:1234", IP: "127.0.0.1", Port: "1234"},
+		Source:    event.Source{IP: "127.0.0.1", Port: "1234"},
 		Command:   "SET",
 		Args:      []string{"key", "value"},
 	}

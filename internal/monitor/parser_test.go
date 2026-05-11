@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -90,8 +89,8 @@ func TestParseStripsLeadingPlusAndCRLF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if strings.HasSuffix(ev.Raw, "\n") {
-		t.Errorf("raw should be trimmed: %q", ev.Raw)
+	if ev.Command != "PING" {
+		t.Errorf("command: %q", ev.Command)
 	}
 }
 
