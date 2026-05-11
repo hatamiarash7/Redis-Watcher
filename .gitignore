@@ -17,7 +17,6 @@ coverage.txt
 /bin/
 /dist/
 /build/
-redis-watcher
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
