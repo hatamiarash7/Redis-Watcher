@@ -1,8 +1,11 @@
 {
   "cSpell.words": [
+    "backpressure",
     "distroless",
+    "FLUSHALL",
     "getsentry",
     "GOFLAGS",
+    "goimports",
     "GOLINT",
     "healthz",
     "natefinch",
@@ -11,6 +14,8 @@
     "nsec",
     "perr",
     "promhttp",
+    "PSUBSCRIBE",
+    "PUNSUBSCRIBE",
     "pushgateway",
     "readyz",
     "Reconnections",

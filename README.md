@@ -1,6 +1,6 @@
 # Redis Watcher
 
-[![Go Version](https://img.shields.io/badge/go-1.23+-00ADD8?logo=go)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Redis Watcher is a small, production-minded daemon that subscribes to a Redis
@@ -8,14 +8,12 @@ server's `MONITOR` stream, parses every command it observes and forwards the
 result to **logs**, **Prometheus metrics**, and **alert channels** (Telegram,
 generic webhooks, Prometheus Pushgateway).
 
-> **Performance note** — `MONITOR` is expensive on busy Redis instances
-> because the server has to serialize every command into ASCII for the
-> watcher. Use Redis Watcher on a side replica or on hosts where the
-> additional CPU cost is acceptable. See [Redis docs on MONITOR][redis-monitor].
+> [!caution]
+> **Performance note** — `MONITOR` is expensive on busy Redis instances because the server has to serialize every command into ASCII for the watcher. Use Redis Watcher on a side replica or on hosts where the additional CPU cost is acceptable. See [Redis docs on MONITOR][redis-monitor].
 
 ## Features
 
-- Connects to Redis over **unix socket** or TCP (with optional AUTH)
+- Connects to Redis over **unix socket** or TCP
 - Streams `MONITOR` events with automatic exponential-backoff reconnect
 - Parses timestamp, DB number, source IP/port, command + arguments
 - Multiple **outputs** in parallel:
@@ -27,8 +25,6 @@ generic webhooks, Prometheus Pushgateway).
   `EVAL`, `SCRIPT`, `SHUTDOWN`, `DEBUG`, …) with per-(command, IP) rate
   limiting; delivered via Telegram, webhook, or Pushgateway
 - **Sentry** integration for runtime error visibility
-- **Docker** image (distroless, non-root) + `docker-compose.yml`
-- Unit tests + integration tests behind a build tag
 - Drop-on-full backpressure policy to protect the MONITOR connection
 
 ## Architecture
@@ -147,11 +143,9 @@ Filtered events do not reach outputs, metrics or alerts. They are counted
 separately in `redis_watcher_ignored_events_total{command="..."}` so you
 can still verify the filter is doing what you expect.
 
-> 💡 `filter.ignored_commands` is the right knob for silencing noise.
-> `metrics.ignored_commands` is a narrower setting that only suppresses
-> Prometheus labels while still writing the event to outputs and the
-> alert engine -- useful if you want to keep audit logs for, say, `PING`
-> but not pay the metric-cardinality price.
+> [!note]
+> `filter.ignored_commands` is the right knob for silencing noise.
+> `metrics.ignored_commands` is a narrower setting that only suppresses Prometheus labels while still writing the event to outputs and the alert engine -- useful if you want to keep audit logs for, say, `PING` but not pay the metric-cardinality price.
 
 ## Prometheus metrics
 
@@ -176,9 +170,8 @@ All metrics are exposed at `/metrics` on the configured `metrics.address`
 Health endpoints `/healthz` and `/readyz` are also exposed for liveness /
 readiness probes.
 
-> 💡 If you operate Redis with many client IPs, set
-> `metrics.track_source_ip: false` to keep per-command time series
-> cardinality bounded.
+> [!warning]
+> If you operate Redis with many client IPs, set `metrics.track_source_ip: false` to keep per-command time series cardinality bounded.
 
 ## Alerts
 
@@ -226,8 +219,28 @@ make docker          # build the OCI image
 
 See [`Makefile`](Makefile) for the full list of targets.
 
-## License
+---
 
-MIT — see [LICENSE](LICENSE).
+## 💛 Support
 
-[redis-monitor]: https://redis.io/docs/latest/commands/monitor/
+[![Donate with Bitcoin](https://img.shields.io/badge/Bitcoin-bc1qmmh6vt366yzjt3grjxjjqynrrxs3frun8gnxrz-orange)](https://donatebadges.ir/donate/Bitcoin/bc1qmmh6vt366yzjt3grjxjjqynrrxs3frun8gnxrz)
+[![Donate with Ethereum](https://img.shields.io/badge/Ethereum-0x0831bD72Ea8904B38Be9D6185Da2f930d6078094-blueviolet)](https://donatebadges.ir/donate/Ethereum/0x0831bD72Ea8904B38Be9D6185Da2f930d6078094)
+
+<div><a href="https://payping.ir/@hatamiarash7"><img src="https://cdn.payping.ir/statics/Payping-logo/Trust/blue.svg" height="128" width="128"></a></div>
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch: `git checkout -b feature/my-new-feature`
+3. Install development dependencies: `make install-dev`
+4. Make your changes and add tests
+5. Run checks: `make check`
+6. Commit your changes: `git commit -am 'Add some feature'`
+7. Push to the branch: `git push origin feature/my-new-feature`
+8. Submit a pull request
+
+## 🐛 Issues
+
+Found a bug or have a suggestion? Please [open an issue](https://github.com/hatamiarash7/Redis-Watcher/issues).
