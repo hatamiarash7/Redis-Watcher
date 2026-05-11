@@ -117,6 +117,42 @@ commented example.
 | `REDIS_WATCHER_ALERTS_WEBHOOK_URL`        | Webhook URL                          |
 | `REDIS_WATCHER_ALERTS_PUSHGATEWAY_URL`    | Pushgateway URL                      |
 
+## Filtering noisy commands
+
+Busy production hosts emit a lot of `PING`, `INFO`, `AUTH`, `SELECT`,
+`SUBSCRIBE` and similar housekeeping traffic that is almost never worth
+auditing. Use the top-level `filter` section to drop these commands as
+early as possible:
+
+```yaml
+filter:
+  ignored_commands:
+    - PING
+    - INFO
+    - AUTH
+    - SELECT
+    - HELLO
+    - COMMAND
+    - SUBSCRIBE
+    - UNSUBSCRIBE
+    - PSUBSCRIBE
+    - PUNSUBSCRIBE
+```
+
+Matching is case-insensitive on the command name (the first token of the
+Redis command). Listing a parent command like `CLIENT` also silences every
+`CLIENT <subcommand>` invocation.
+
+Filtered events do not reach outputs, metrics or alerts. They are counted
+separately in `redis_watcher_ignored_events_total{command="..."}` so you
+can still verify the filter is doing what you expect.
+
+> 💡 `filter.ignored_commands` is the right knob for silencing noise.
+> `metrics.ignored_commands` is a narrower setting that only suppresses
+> Prometheus labels while still writing the event to outputs and the
+> alert engine -- useful if you want to keep audit logs for, say, `PING`
+> but not pay the metric-cardinality price.
+
 ## Prometheus metrics
 
 All metrics are exposed at `/metrics` on the configured `metrics.address`
@@ -131,6 +167,7 @@ All metrics are exposed at `/metrics` on the configured `metrics.address`
 | `redis_watcher_alerts_sent_total`               | counter | `channel`, `command`                  |
 | `redis_watcher_alert_send_errors_total`         | counter | `channel`                             |
 | `redis_watcher_dropped_events_total`            | counter | `consumer`                            |
+| `redis_watcher_ignored_events_total`            | counter | `command`                             |
 | `redis_watcher_monitor_reconnects_total`        | counter | —                                     |
 | `redis_watcher_parse_errors_total`              | counter | —                                     |
 | `redis_watcher_events_processed_total`          | counter | —                                     |

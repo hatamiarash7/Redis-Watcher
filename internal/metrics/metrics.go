@@ -30,6 +30,7 @@ type Registry struct {
 	ParseErrorsTotal   prometheus.Counter
 	ReconnectsTotal    prometheus.Counter
 	DroppedEventsTotal *prometheus.CounterVec
+	IgnoredEventsTotal *prometheus.CounterVec
 	AlertsSentTotal    *prometheus.CounterVec
 	AlertSendErrors    *prometheus.CounterVec
 	BuildInfo          *prometheus.GaugeVec
@@ -90,6 +91,12 @@ func New(ignoredCommands []string, trackSourceIP bool, version, commit string) *
 		Help:      "Events dropped because a downstream consumer was saturated.",
 	}, []string{"consumer"})
 
+	r.IgnoredEventsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "redis_watcher",
+		Name:      "ignored_events_total",
+		Help:      "Events filtered out by filter.ignored_commands before dispatch.",
+	}, []string{"command"})
+
 	r.AlertsSentTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "redis_watcher",
 		Name:      "alerts_sent_total",
@@ -122,6 +129,7 @@ func New(ignoredCommands []string, trackSourceIP bool, version, commit string) *
 		r.ParseErrorsTotal,
 		r.ReconnectsTotal,
 		r.DroppedEventsTotal,
+		r.IgnoredEventsTotal,
 		r.AlertsSentTotal,
 		r.AlertSendErrors,
 		r.EventsProcessed,

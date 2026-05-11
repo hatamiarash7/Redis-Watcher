@@ -19,6 +19,7 @@ const envPrefix = "REDIS_WATCHER_"
 type Config struct {
 	Redis    RedisConfig    `yaml:"redis"`
 	Log      LogConfig      `yaml:"log"`
+	Filter   FilterConfig   `yaml:"filter"`
 	Outputs  []OutputConfig `yaml:"outputs"`
 	Metrics  MetricsConfig  `yaml:"metrics"`
 	Alerts   AlertsConfig   `yaml:"alerts"`
@@ -43,6 +44,31 @@ type LogConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
 	File   string `yaml:"file"`
+}
+
+// FilterConfig configures pipeline-wide event filtering. Commands listed
+// here are dropped before any downstream subsystem sees them, so they will
+// NOT appear in outputs, metrics or alerts. Use this to silence high-volume,
+// low-value noise such as PING/PUBLISH/INFO/AUTH on busy production hosts.
+//
+// NOTE: this is different from `metrics.ignored_commands`, which only
+// suppresses Prometheus counters but still writes the event to outputs and
+// evaluates alert rules.
+type FilterConfig struct {
+	IgnoredCommands []string `yaml:"ignored_commands"`
+}
+
+// IgnoredSet returns the configured commands as an upper-cased lookup set
+// suitable for O(1) membership testing on the hot path.
+func (f FilterConfig) IgnoredSet() map[string]struct{} {
+	set := make(map[string]struct{}, len(f.IgnoredCommands))
+	for _, c := range f.IgnoredCommands {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if c != "" {
+			set[c] = struct{}{}
+		}
+	}
+	return set
 }
 
 // OutputConfig describes one audit-log sink.

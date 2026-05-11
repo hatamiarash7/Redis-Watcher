@@ -124,10 +124,25 @@ func Run(ctx context.Context, configPath string, info BuildInfo) error {
 		}()
 	}
 
+	ignored := cfg.Filter.IgnoredSet()
+	if len(ignored) > 0 {
+		log.Info("event filter active", "ignored_commands", len(ignored))
+	}
+
+	d := dispatcher{
+		log:     log,
+		reg:     reg,
+		mon:     mon,
+		source:  events,
+		outputs: outMgr,
+		alerts:  alertEngine,
+		ignored: ignored,
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		dispatch(runCtx, log, reg, mon, events, outMgr, alertEngine)
+		d.run(runCtx)
 	}()
 
 	wg.Add(1)
@@ -149,15 +164,20 @@ func Run(ctx context.Context, configPath string, info BuildInfo) error {
 	return nil
 }
 
-func dispatch(
-	ctx context.Context,
-	log *slog.Logger,
-	reg *metrics.Registry,
-	mon *monitor.Client,
-	source <-chan *event.Event,
-	outMgr *output.Manager,
-	alertEngine *alert.Engine,
-) {
+// dispatcher fans out parsed events to metrics, outputs and alerts. It is
+// extracted into its own type primarily to keep the parameter list small
+// and to make filter-path tests trivial to write.
+type dispatcher struct {
+	log     *slog.Logger
+	reg     *metrics.Registry
+	mon     *monitor.Client
+	source  <-chan *event.Event
+	outputs *output.Manager
+	alerts  *alert.Engine
+	ignored map[string]struct{}
+}
+
+func (d *dispatcher) run(ctx context.Context) {
 	statsTicker := time.NewTicker(30 * time.Second)
 	defer statsTicker.Stop()
 
@@ -165,20 +185,27 @@ func dispatch(
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-source:
+		case ev, ok := <-d.source:
 			if !ok {
 				return
 			}
-			reg.Record(ev)
-			if outMgr != nil {
-				outMgr.Dispatch(ev)
+			if _, skip := d.ignored[ev.Command]; skip {
+				d.reg.IgnoredEventsTotal.WithLabelValues(ev.Command).Inc()
+				continue
 			}
-			if alertEngine != nil {
-				alertEngine.Submit(ev)
+			d.reg.Record(ev)
+			if d.outputs != nil {
+				d.outputs.Dispatch(ev)
+			}
+			if d.alerts != nil {
+				d.alerts.Submit(ev)
 			}
 		case <-statsTicker.C:
-			s := mon.Stats()
-			log.Debug("monitor stats",
+			if d.log == nil {
+				continue
+			}
+			s := d.mon.Stats()
+			d.log.Debug("monitor stats",
 				"reconnects", s.Reconnections,
 				"parse_errors", s.ParseErrors,
 				"dropped", s.Dropped)

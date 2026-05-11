@@ -29,6 +29,36 @@ log:
   # Optional log file (process logs, NOT audit logs). Stderr if empty.
   file: ""
 
+# ---- Global event filter ------------------------------------------------------
+# Commands listed here are dropped early in the pipeline. They will NOT be
+# logged to any output, will NOT increment Prometheus counters and will NOT
+# trigger alerts. Use this to silence high-volume, low-value noise on busy
+# production hosts.
+#
+# Matching is case-insensitive on the command name (the first token of the
+# Redis command). To also drop subcommand-routed commands like CLIENT, list
+# the parent command name -- e.g. listing "CLIENT" silences CLIENT GETNAME,
+# CLIENT LIST, CLIENT KILL, ... and you can keep an entry for CLIENT KILL in
+# alerts.suspicious_commands by NOT adding CLIENT here.
+#
+# NOTE: this differs from `metrics.ignored_commands` below, which only
+# suppresses Prometheus labels for the command while still emitting the
+# event to outputs and the alert engine.
+filter:
+  ignored_commands:
+    - PING
+    - INFO
+    - AUTH
+    - SELECT
+    - HELLO
+    - COMMAND
+    - SUBSCRIBE
+    - UNSUBSCRIBE
+    - PSUBSCRIBE
+    - PUNSUBSCRIBE
+    # - PUBLISH        # uncomment to silence pub/sub traffic
+    # - CLUSTER        # uncomment to silence sentinel/cluster chatter
+
 # ---- Audit event outputs ------------------------------------------------------
 # Each parsed MONITOR event is sent to every enabled output.
 outputs:

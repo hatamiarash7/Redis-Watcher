@@ -132,6 +132,43 @@ func TestEnvOverridesApplied(t *testing.T) {
 	}
 }
 
+func TestFilterIgnoredSetNormalizesAndDeduplicates(t *testing.T) {
+	f := FilterConfig{IgnoredCommands: []string{"ping", "PING", "  Info ", "", "AUTH"}}
+	got := f.IgnoredSet()
+	want := []string{"PING", "INFO", "AUTH"}
+	for _, w := range want {
+		if _, ok := got[w]; !ok {
+			t.Errorf("missing %q in set %v", w, got)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("expected 3 unique entries, got %d: %v", len(got), got)
+	}
+}
+
+func TestFilterLoadedFromYAML(t *testing.T) {
+	path := writeTempConfig(t, `
+redis:
+  network: tcp
+  address: 127.0.0.1:6379
+filter:
+  ignored_commands:
+    - PING
+    - publish
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	set := cfg.Filter.IgnoredSet()
+	if _, ok := set["PING"]; !ok {
+		t.Error("PING not in filter set")
+	}
+	if _, ok := set["PUBLISH"]; !ok {
+		t.Error("PUBLISH not normalized to uppercase")
+	}
+}
+
 func TestDurationsParsed(t *testing.T) {
 	path := writeTempConfig(t, `
 redis:
