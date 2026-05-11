@@ -9,7 +9,7 @@ result to **logs**, **Prometheus metrics**, and **alert channels** (Telegram,
 generic webhooks, Prometheus Pushgateway).
 
 > [!caution]
-> **Performance note** — `MONITOR` is expensive on busy Redis instances because the server has to serialize every command into ASCII for the watcher. Use Redis Watcher on a side replica or on hosts where the additional CPU cost is acceptable. See [Redis docs on MONITOR][redis-monitor].
+> **Performance note** — `MONITOR` is expensive on busy Redis instances because the server has to serialize every command into ASCII for the watcher. Use Redis Watcher on a side replica or on hosts where the additional CPU cost is acceptable. See [Redis docs on MONITOR](https://redis.io/docs/latest/commands/monitor/).
 
 ## Features
 
