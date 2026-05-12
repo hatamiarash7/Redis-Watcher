@@ -306,10 +306,12 @@ func buildAlertEngine(cfg *config.Config, reg *metrics.Registry, log *slog.Logge
 	}
 	var channels []alert.Channel
 	if cfg.Alerts.Telegram.Enabled {
-		channels = append(channels, alert.NewTelegramChannel(
-			cfg.Alerts.Telegram.BotToken,
-			cfg.Alerts.Telegram.ChatID,
-			cfg.Alerts.Telegram.Timeout))
+		channels = append(channels, alert.NewTelegramChannel(alert.TelegramOptions{
+			BotToken: cfg.Alerts.Telegram.BotToken,
+			ChatID:   cfg.Alerts.Telegram.ChatID,
+			ThreadID: cfg.Alerts.Telegram.ThreadID,
+			Timeout:  cfg.Alerts.Telegram.Timeout,
+		}))
 	}
 	if cfg.Alerts.Webhook.Enabled {
 		channels = append(channels, alert.NewWebhookChannel(

@@ -169,6 +169,10 @@ alerts:
     enabled: false
     bot_token: ""
     chat_id: "" # may be a user id or "@channel"
+    # Optional Telegram topic id. When non-zero this is sent as
+    # `message_thread_id` so messages land in a specific topic of a
+    # group. Leave 0 (or omit) for regular chats.
+    thread_id: 0
     timeout: 5s
 
   webhook:

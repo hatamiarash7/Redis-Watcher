@@ -14,18 +14,31 @@ import (
 type TelegramChannel struct {
 	botToken string
 	chatID   string
+	threadID int
 	client   *http.Client
 }
 
+// TelegramOptions configures a TelegramChannel.
+type TelegramOptions struct {
+	BotToken string
+	ChatID   string
+	// ThreadID, when non-zero, is sent as `message_thread_id` so messages
+	// land in a specific topic of a Telegram forum chat. A value of 0
+	// (the zero value) means "general thread / not a forum".
+	ThreadID int
+	Timeout  time.Duration
+}
+
 // NewTelegramChannel constructs a TelegramChannel.
-func NewTelegramChannel(botToken, chatID string, timeout time.Duration) *TelegramChannel {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
+func NewTelegramChannel(opts TelegramOptions) *TelegramChannel {
+	if opts.Timeout <= 0 {
+		opts.Timeout = 5 * time.Second
 	}
 	return &TelegramChannel{
-		botToken: botToken,
-		chatID:   chatID,
-		client:   &http.Client{Timeout: timeout},
+		botToken: opts.BotToken,
+		chatID:   opts.ChatID,
+		threadID: opts.ThreadID,
+		client:   &http.Client{Timeout: opts.Timeout},
 	}
 }
 
@@ -36,16 +49,18 @@ func (*TelegramChannel) Name() string { return "telegram" }
 func (*TelegramChannel) Close() error { return nil }
 
 type telegramRequest struct {
-	ChatID    string `json:"chat_id"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode,omitempty"`
+	ChatID          string `json:"chat_id"`
+	Text            string `json:"text"`
+	ParseMode       string `json:"parse_mode,omitempty"`
+	MessageThreadID int    `json:"message_thread_id,omitempty"`
 }
 
 // Send implements Channel.
 func (t *TelegramChannel) Send(ctx context.Context, a Alert) error {
 	body, err := json.Marshal(telegramRequest{
-		ChatID: t.chatID,
-		Text:   a.Renderer(),
+		ChatID:          t.chatID,
+		Text:            a.Renderer(),
+		MessageThreadID: t.threadID,
 	})
 	if err != nil {
 		return err

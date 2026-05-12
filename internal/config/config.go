@@ -136,9 +136,13 @@ type RateLimitConfig struct {
 
 // TelegramConfig configures Telegram bot notifications.
 type TelegramConfig struct {
-	Enabled  bool          `yaml:"enabled"`
-	BotToken string        `yaml:"bot_token"`
-	ChatID   string        `yaml:"chat_id"`
+	Enabled  bool   `yaml:"enabled"`
+	BotToken string `yaml:"bot_token"`
+	ChatID   string `yaml:"chat_id"`
+	// ThreadID is the optional `message_thread_id` parameter used by the
+	// Telegram Bot API to target a specific topic inside a grouped chat. Leave
+	// at 0 (or omit) for non-topic chats.
+	ThreadID int           `yaml:"thread_id"`
 	Timeout  time.Duration `yaml:"timeout"`
 }
 
@@ -378,6 +382,7 @@ func (c *Config) Validate() error {
 //	REDIS_WATCHER_SENTRY_RELEASE
 //	REDIS_WATCHER_ALERTS_TELEGRAM_BOT_TOKEN
 //	REDIS_WATCHER_ALERTS_TELEGRAM_CHAT_ID
+//	REDIS_WATCHER_ALERTS_TELEGRAM_THREAD_ID
 //	REDIS_WATCHER_ALERTS_WEBHOOK_URL
 //	REDIS_WATCHER_ALERTS_PUSHGATEWAY_URL
 func applyEnv(c *Config) {
@@ -390,6 +395,13 @@ func applyEnv(c *Config) {
 		if v, ok := os.LookupEnv(envPrefix + key); ok {
 			if b, err := strconv.ParseBool(v); err == nil {
 				*dst = b
+			}
+		}
+	}
+	intVar := func(key string, dst *int) {
+		if v, ok := os.LookupEnv(envPrefix + key); ok {
+			if n, err := strconv.Atoi(v); err == nil {
+				*dst = n
 			}
 		}
 	}
@@ -407,6 +419,7 @@ func applyEnv(c *Config) {
 	str("SENTRY_RELEASE", &c.Sentry.Release)
 	str("ALERTS_TELEGRAM_BOT_TOKEN", &c.Alerts.Telegram.BotToken)
 	str("ALERTS_TELEGRAM_CHAT_ID", &c.Alerts.Telegram.ChatID)
+	intVar("ALERTS_TELEGRAM_THREAD_ID", &c.Alerts.Telegram.ThreadID)
 	str("ALERTS_WEBHOOK_URL", &c.Alerts.Webhook.URL)
 	str("ALERTS_PUSHGATEWAY_URL", &c.Alerts.Pushgateway.URL)
 }

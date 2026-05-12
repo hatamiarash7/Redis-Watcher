@@ -132,6 +132,39 @@ func TestEnvOverridesApplied(t *testing.T) {
 	}
 }
 
+func TestTelegramThreadIDFromYAML(t *testing.T) {
+	path := writeTempConfig(t, `
+redis:
+  network: tcp
+  address: 127.0.0.1:6379
+alerts:
+  enabled: true
+  telegram:
+    enabled: true
+    bot_token: t
+    chat_id: c
+    thread_id: 42
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Alerts.Telegram.ThreadID != 42 {
+		t.Errorf("thread_id: %d", cfg.Alerts.Telegram.ThreadID)
+	}
+}
+
+func TestTelegramThreadIDFromEnv(t *testing.T) {
+	t.Setenv("REDIS_WATCHER_ALERTS_TELEGRAM_THREAD_ID", "7")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Alerts.Telegram.ThreadID != 7 {
+		t.Errorf("env thread_id: %d", cfg.Alerts.Telegram.ThreadID)
+	}
+}
+
 func TestFilterIgnoredSetNormalizesAndDeduplicates(t *testing.T) {
 	f := FilterConfig{IgnoredCommands: []string{"ping", "PING", "  Info ", "", "AUTH"}}
 	got := f.IgnoredSet()
