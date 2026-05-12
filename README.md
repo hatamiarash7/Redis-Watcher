@@ -2,6 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Image size](https://img.shields.io/docker/image-size/hatamiarash7/redis-watcher/latest?maxAge=30)](https://hub.docker.com/r/hatamiarash7/redis-watcher/)
 
 Redis Watcher is a small, production-minded daemon that subscribes to a Redis
 server's `MONITOR` stream, parses every command it observes and forwards the
