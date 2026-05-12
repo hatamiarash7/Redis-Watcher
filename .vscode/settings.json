@@ -3,6 +3,7 @@
     "appendonly",
     "backpressure",
     "distroless",
+    "failovers",
     "FLUSHALL",
     "getsentry",
     "GOFLAGS",

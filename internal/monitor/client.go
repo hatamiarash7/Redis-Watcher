@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/hatamiarash7/redis-watcher/internal/event"
+	"github.com/hatamiarash7/redis-watcher/internal/resp"
 )
 
 // Options configures a Client.
@@ -36,6 +37,26 @@ type Options struct {
 // they may be invoked on the hot path.
 type ErrorReporter func(err error, kv ...any)
 
+// noopReporter is the default ErrorReporter used when the caller passes
+// nil. It is intentionally empty so the hot path can call report() without
+// a nil-check; suppression of every non-fatal error is correct behaviour
+// for the "no telemetry attached" configuration.
+func noopReporter(_ error, _ ...any) {
+	// intentionally a no-op
+}
+
+// Gate gates the MONITOR connection. When IsActive returns false the
+// Client will not connect (or will disconnect if already connected). Wait
+// blocks until the gate is active again. Subscribe lets the Client tear
+// down its connection promptly on transitions.
+//
+// The role.Checker in internal/role implements this interface.
+type Gate interface {
+	IsActive() bool
+	Wait(ctx context.Context) error
+	Subscribe() (<-chan struct{}, func())
+}
+
 // Client repeatedly connects to Redis, issues MONITOR, parses the resulting
 // stream and emits Events.
 type Client struct {
@@ -44,6 +65,7 @@ type Client struct {
 	out    chan<- *event.Event
 	report ErrorReporter
 	drop   bool
+	gate   Gate
 
 	dropped atomic.Uint64
 	parseEr atomic.Uint64
@@ -56,7 +78,7 @@ func New(opts Options, out chan<- *event.Event, log *slog.Logger, report ErrorRe
 		log = slog.Default()
 	}
 	if report == nil {
-		report = func(_ error, _ ...any) {}
+		report = noopReporter
 	}
 	if opts.BackoffMin <= 0 {
 		opts.BackoffMin = time.Second
@@ -66,6 +88,12 @@ func New(opts Options, out chan<- *event.Event, log *slog.Logger, report ErrorRe
 	}
 	return &Client{opts: opts, log: log, out: out, report: report, drop: dropOnFull}
 }
+
+// SetGate installs a Gate. When set, Run blocks while the gate is inactive
+// (e.g. when the upstream Redis is a Sentinel replica) and tears down the
+// MONITOR connection on every transition so the next iteration re-evaluates
+// the role. Pass nil to remove the gate.
+func (c *Client) SetGate(g Gate) { c.gate = g }
 
 // Stats reports counters exposed for metrics or logging.
 type Stats struct {
@@ -84,13 +112,22 @@ func (c *Client) Stats() Stats {
 }
 
 // Run blocks until ctx is cancelled, repeatedly establishing the MONITOR
-// connection with exponential backoff on failure.
+// connection with exponential backoff on failure. If a Gate is installed,
+// Run waits for the gate to be active before each (re)connect.
 func (c *Client) Run(ctx context.Context) error {
 	backoff := c.opts.BackoffMin
 	first := true
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.gate != nil && !c.gate.IsActive() {
+			c.log.Info("MONITOR paused: upstream is not master")
+			if err := c.gate.Wait(ctx); err != nil {
+				return err
+			}
+			c.log.Info("MONITOR resuming: upstream is now master")
+			backoff = c.opts.BackoffMin
 		}
 		if !first {
 			c.recon.Add(1)
@@ -103,6 +140,12 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
+		}
+		// If the gate just deactivated, treat the disconnect as expected and
+		// skip the backoff so we can re-enter Wait immediately.
+		if c.gate != nil && !c.gate.IsActive() {
+			c.log.Info("MONITOR connection closed due to role transition")
+			continue
 		}
 		c.log.Error("MONITOR connection failed", "err", err, "backoff", backoff)
 		c.report(err, "stage", "monitor_connection")
@@ -139,22 +182,45 @@ func (c *Client) runOnce(ctx context.Context) error {
 		}
 	}()
 
+	// If a gate is installed, watch for transitions and drop the connection
+	// the moment we are no longer the master.
+	if c.gate != nil {
+		notify, unsub := c.gate.Subscribe()
+		go func() {
+			defer unsub()
+			for {
+				select {
+				case <-closed:
+					return
+				case <-ctx.Done():
+					return
+				case <-notify:
+					if !c.gate.IsActive() {
+						c.log.Info("role transitioned to replica, closing MONITOR")
+						_ = conn.Close()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	r := bufio.NewReaderSize(conn, 64*1024)
 	w := bufio.NewWriter(conn)
 
 	if c.opts.Password != "" {
-		if err := writeCmd(w, authArgs(c.opts.Username, c.opts.Password)...); err != nil {
+		if err := resp.WriteCommand(w, resp.AuthArgs(c.opts.Username, c.opts.Password)...); err != nil {
 			return fmt.Errorf("send AUTH: %w", err)
 		}
-		if err := readSimpleString(r); err != nil {
+		if err := resp.ReadSimpleString(r); err != nil {
 			return fmt.Errorf("AUTH failed: %w", err)
 		}
 	}
 
-	if err := writeCmd(w, "MONITOR"); err != nil {
+	if err := resp.WriteCommand(w, "MONITOR"); err != nil {
 		return fmt.Errorf("send MONITOR: %w", err)
 	}
-	if err := readSimpleString(r); err != nil {
+	if err := resp.ReadSimpleString(r); err != nil {
 		return fmt.Errorf("MONITOR rejected: %w", err)
 	}
 
@@ -212,44 +278,6 @@ func (c *Client) readLoop(ctx context.Context, conn net.Conn, r *bufio.Reader) e
 			}
 		}
 	}
-}
-
-func writeCmd(w *bufio.Writer, args ...string) error {
-	if _, err := fmt.Fprintf(w, "*%d\r\n", len(args)); err != nil {
-		return err
-	}
-	for _, a := range args {
-		if _, err := fmt.Fprintf(w, "$%d\r\n%s\r\n", len(a), a); err != nil {
-			return err
-		}
-	}
-	return w.Flush()
-}
-
-func readSimpleString(r *bufio.Reader) error {
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return err
-	}
-	line = strings.TrimRight(line, "\r\n")
-	if line == "" {
-		return errors.New("empty response")
-	}
-	switch line[0] {
-	case '+':
-		return nil
-	case '-':
-		return errors.New(line[1:])
-	default:
-		return fmt.Errorf("unexpected response: %s", line)
-	}
-}
-
-func authArgs(user, pass string) []string {
-	if user != "" {
-		return []string{"AUTH", user, pass}
-	}
-	return []string{"AUTH", pass}
 }
 
 // redact masks the host part of a "host:port" string so it can be logged

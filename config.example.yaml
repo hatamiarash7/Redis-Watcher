@@ -17,17 +17,43 @@ redis:
   password: ""
   # Connection / read timeouts
   dial_timeout: 5s
-  read_timeout: 0s          # 0 disables read deadline (recommended for MONITOR)
+  read_timeout: 0s # 0 disables read deadline (recommended for MONITOR)
   # Reconnect backoff
   backoff_min: 1s
   backoff_max: 30s
 
 # ---- Logging ------------------------------------------------------------------
 log:
-  level: info               # debug | info | warn | error
-  format: json              # json | text
+  level: info # debug | info | warn | error
+  format: json # json | text
   # Optional log file (process logs, NOT audit logs). Stderr if empty.
   file: ""
+
+# ---- Sentinel-aware role detection -------------------------------------------
+# Redis Watcher should run on Redis Sentinel-managed clusters ONLY against the
+# current primary. When the upstream Redis is a replica, the entire pipeline
+# (MONITOR consumption, outputs, metrics, alerts) is paused. As soon as the
+# instance is promoted to primary again, work resumes automatically.
+#
+# This avoids:
+#   * the real source IP:PORT will be shown only when the instance is master
+#   * duplicated audit trails on every replica in a fleet
+#   * spurious "FLUSH*"/"CONFIG" alerts caused by replication command stream
+#   * wasted CPU running MONITOR on follower nodes
+#
+# The role is probed with `INFO replication` on a separate connection at the
+# interval configured below. See `redis_watcher_redis_is_master` and
+# `redis_watcher_redis_role_transitions_total` in the metrics endpoint to
+# observe transitions.
+role_check:
+  enabled: true
+  interval: 5s # how often to probe the role
+  dial_timeout: 3s
+  read_timeout: 3s
+  # Escape hatch: when true, run regardless of role. Use this only for
+  # debugging or for non-Sentinel deployments where you explicitly want to
+  # audit a replica.
+  allow_replica: false
 
 # ---- Global event filter ------------------------------------------------------
 # Commands listed here are dropped early in the pipeline. They will NOT be
@@ -64,21 +90,21 @@ filter:
 outputs:
   - type: stdout
     enabled: false
-    format: json            # json | text
+    format: json # json | text
 
   - type: file
     enabled: true
     path: /var/log/redis-watcher/audit.log
     format: json
     rotation:
-      max_size_mb: 100      # rotate when file reaches this size
-      max_backups: 5        # number of rotated files to keep
-      max_age_days: 30      # max age in days
-      compress: true        # gzip rotated files
+      max_size_mb: 100 # rotate when file reaches this size
+      max_backups: 5 # number of rotated files to keep
+      max_age_days: 30 # max age in days
+      compress: true # gzip rotated files
 
   - type: udp
     enabled: false
-    address: 127.0.0.1:24224  # e.g. Fluent Bit / Fluentd forward
+    address: 127.0.0.1:24224 # e.g. Fluent Bit / Fluentd forward
     format: json
     timeout: 2s
 
@@ -116,7 +142,6 @@ alerts:
     - SCRIPT
     - SHUTDOWN
     - DEBUG
-    - CLIENT
     - MODULE
     - REPLICAOF
     - SLAVEOF
@@ -143,7 +168,7 @@ alerts:
   telegram:
     enabled: false
     bot_token: ""
-    chat_id: ""              # may be a user id or "@channel"
+    chat_id: "" # may be a user id or "@channel"
     timeout: 5s
 
   webhook:

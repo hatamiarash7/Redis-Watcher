@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -213,6 +214,158 @@ func TestClientReconnects(t *testing.T) {
 
 	if got := c.Stats().Reconnections; got == 0 {
 		t.Errorf("expected at least 1 reconnect, got %d", got)
+	}
+}
+
+// stubGate is a programmable Gate implementation for testing the
+// pause/resume behaviour of the MONITOR client.
+type stubGate struct {
+	mu      sync.Mutex
+	active  bool
+	waiters []chan struct{}
+}
+
+func newStubGate(active bool) *stubGate { return &stubGate{active: active} }
+
+func (g *stubGate) IsActive() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active
+}
+
+func (g *stubGate) Wait(ctx context.Context) error {
+	for {
+		if g.IsActive() {
+			return nil
+		}
+		ch, cancel := g.Subscribe()
+		if g.IsActive() {
+			cancel()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+		case <-ch:
+			cancel()
+		}
+	}
+}
+
+func (g *stubGate) Subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	g.mu.Lock()
+	g.waiters = append(g.waiters, ch)
+	g.mu.Unlock()
+	cancel := func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		for i, w := range g.waiters {
+			if w == ch {
+				g.waiters = append(g.waiters[:i], g.waiters[i+1:]...)
+				return
+			}
+		}
+	}
+	return ch, cancel
+}
+
+func (g *stubGate) Set(active bool) {
+	g.mu.Lock()
+	g.active = active
+	waiters := append([]chan struct{}{}, g.waiters...)
+	g.mu.Unlock()
+	for _, w := range waiters {
+		select {
+		case w <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func TestClientPausesWhileGateInactive(t *testing.T) {
+	srv := newFakeRedis(t, "", []string{
+		`1.0 [0 127.0.0.1:11111] "PING"`,
+	})
+	defer srv.close()
+
+	gate := newStubGate(false)
+
+	ch := make(chan *event.Event, 4)
+	c := New(Options{
+		Network: "tcp", Address: srv.addr(),
+		DialTimeout: time.Second,
+		BackoffMin:  10 * time.Millisecond, BackoffMax: 50 * time.Millisecond,
+	}, ch, nil, nil, true)
+	c.SetGate(gate)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = c.Run(ctx) }()
+
+	// Verify nothing is observed while gate is inactive.
+	select {
+	case ev := <-ch:
+		t.Fatalf("did not expect event while paused: %+v", ev)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	gate.Set(true)
+
+	select {
+	case ev := <-ch:
+		if ev.Command != "PING" {
+			t.Errorf("expected PING, got %q", ev.Command)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for event after gate activation")
+	}
+}
+
+func TestClientDisconnectsOnGateDeactivation(t *testing.T) {
+	srv := newFakeRedis(t, "", []string{
+		`1.0 [0 127.0.0.1:11111] "PING"`,
+	})
+	defer srv.close()
+
+	gate := newStubGate(true)
+
+	ch := make(chan *event.Event, 4)
+	c := New(Options{
+		Network: "tcp", Address: srv.addr(),
+		DialTimeout: time.Second,
+		BackoffMin:  10 * time.Millisecond, BackoffMax: 50 * time.Millisecond,
+	}, ch, nil, nil, true)
+	c.SetGate(gate)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = c.Run(ctx) }()
+
+	<-ch // initial PING
+
+	// Drop a TCP connection from the server pool to make sure the next event
+	// would arrive on a new connection -- we deactivate the gate instead and
+	// verify we never receive that next PING.
+	conn := <-srv.conns
+	gate.Set(false)
+	_ = conn.Close()
+
+	select {
+	case ev := <-ch:
+		t.Fatalf("did not expect event after gate deactivation, got %+v", ev)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	gate.Set(true)
+	select {
+	case ev := <-ch:
+		if ev.Command != "PING" {
+			t.Errorf("expected PING, got %q", ev.Command)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout after re-activation")
 	}
 }
 

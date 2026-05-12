@@ -34,6 +34,9 @@ type Registry struct {
 	AlertSendErrors    *prometheus.CounterVec
 	BuildInfo          *prometheus.GaugeVec
 	EventsProcessed    prometheus.Counter
+	RedisIsMaster      prometheus.Gauge
+	RedisRoleInfo      *prometheus.GaugeVec
+	RoleTransitions    *prometheus.CounterVec
 }
 
 // New builds a Registry. The returned object owns its own *prometheus.Registry
@@ -120,6 +123,24 @@ func New(ignoredCommands []string, trackSourceIP bool, version, commit string) *
 		Help:      "Build information.",
 	}, []string{"version", "commit"})
 
+	r.RedisIsMaster = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "redis_watcher",
+		Name:      "redis_is_master",
+		Help:      "1 when the upstream Redis is the primary, 0 otherwise.",
+	})
+
+	r.RedisRoleInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "redis_watcher",
+		Name:      "redis_role_info",
+		Help:      "Current upstream Redis replication role. Value is always 1; the role is encoded in the `role` label.",
+	}, []string{"role"})
+
+	r.RoleTransitions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "redis_watcher",
+		Name:      "redis_role_transitions_total",
+		Help:      "Total observed transitions in the upstream Redis role.",
+	}, []string{"from", "to"})
+
 	r.r.MustRegister(
 		r.CommandsTotal,
 		r.CommandsByIPTotal,
@@ -133,6 +154,9 @@ func New(ignoredCommands []string, trackSourceIP bool, version, commit string) *
 		r.AlertSendErrors,
 		r.EventsProcessed,
 		r.BuildInfo,
+		r.RedisIsMaster,
+		r.RedisRoleInfo,
+		r.RoleTransitions,
 	)
 	r.BuildInfo.WithLabelValues(version, commit).Set(1)
 	return r
@@ -154,6 +178,24 @@ func (r *Registry) Record(ev *event.Event) {
 // RecordSuspicious increments the suspicious-command counter.
 func (r *Registry) RecordSuspicious(command, sourceIP string) {
 	r.SuspiciousTotal.WithLabelValues(command, sourceIP).Inc()
+}
+
+// SetRedisRole publishes the current upstream role for the
+// `redis_watcher_redis_is_master` gauge and the `redis_role_info` label.
+// Older label values are reset to 0 so a single role is always "1".
+func (r *Registry) SetRedisRole(roleName string) {
+	r.RedisRoleInfo.Reset()
+	r.RedisRoleInfo.WithLabelValues(roleName).Set(1)
+	if roleName == "master" {
+		r.RedisIsMaster.Set(1)
+	} else {
+		r.RedisIsMaster.Set(0)
+	}
+}
+
+// RecordRoleTransition bumps the role-transitions counter.
+func (r *Registry) RecordRoleTransition(from, to string) {
+	r.RoleTransitions.WithLabelValues(from, to).Inc()
 }
 
 // Gatherer exposes the underlying gatherer for Pushgateway integration.

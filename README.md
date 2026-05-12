@@ -113,6 +113,44 @@ commented example.
 | `REDIS_WATCHER_ALERTS_WEBHOOK_URL`        | Webhook URL                          |
 | `REDIS_WATCHER_ALERTS_PUSHGATEWAY_URL`    | Pushgateway URL                      |
 
+## Sentinel-aware role detection
+
+In Redis Sentinel deployments the primary may move between hosts at any
+time. Running Redis Watcher on every node would duplicate audit trails
+across the fleet and trigger spurious alerts from the replication
+command stream itself. Also, the real source IP:PORT will be shown only when the instance is master
+
+Redis Watcher therefore ships with a built-in role detector. It probes
+the upstream Redis with `INFO replication` every few seconds:
+
+- While the instance is the **primary**, the pipeline runs normally.
+- When the instance becomes a **replica** (e.g. after a Sentinel failover)
+  the MONITOR connection is dropped immediately and outputs/metrics/alerts
+  pause until the role flips back.
+
+```yaml
+role_check:
+  enabled: true
+  interval: 5s
+  dial_timeout: 3s
+  read_timeout: 3s
+  allow_replica: false   # set to true only for debugging or non-Sentinel setups
+```
+
+Observability:
+
+```text
+redis_watcher_redis_is_master                       # gauge: 1=master, 0=replica
+redis_watcher_redis_role_info{role="master"}        # 1 for the currently observed role
+redis_watcher_redis_role_transitions_total{from,to} # counter of role flips
+```
+
+Deployment pattern: install Redis Watcher as a sidecar on **every** node
+that can become a primary (e.g. as a DaemonSet, or alongside each Redis
+unit in your service manager). With `role_check` enabled this is safe:
+only one Redis Watcher in the cluster will actively audit at any time,
+and the active one automatically follows the primary across failovers.
+
 ## Filtering noisy commands
 
 Busy production hosts emit a lot of `PING`, `INFO`, `AUTH`, `SELECT`,
@@ -166,6 +204,9 @@ All metrics are exposed at `/metrics` on the configured `metrics.address`
 | `redis_watcher_parse_errors_total`              | counter | —                                     |
 | `redis_watcher_events_processed_total`          | counter | —                                     |
 | `redis_watcher_build_info`                      | gauge   | `version`, `commit`                   |
+| `redis_watcher_redis_is_master`                 | gauge   | —                                     |
+| `redis_watcher_redis_role_info`                 | gauge   | `role`                                |
+| `redis_watcher_redis_role_transitions_total`    | counter | `from`, `to`                          |
 
 Health endpoints `/healthz` and `/readyz` are also exposed for liveness /
 readiness probes.

@@ -21,6 +21,7 @@ import (
 	"github.com/hatamiarash7/redis-watcher/internal/metrics"
 	"github.com/hatamiarash7/redis-watcher/internal/monitor"
 	"github.com/hatamiarash7/redis-watcher/internal/output"
+	"github.com/hatamiarash7/redis-watcher/internal/role"
 	"github.com/hatamiarash7/redis-watcher/internal/sentryx"
 )
 
@@ -86,12 +87,40 @@ func Run(ctx context.Context, configPath string, info BuildInfo) error {
 		BackoffMax:  cfg.Redis.BackoffMax,
 	}, events, log, report, cfg.Pipeline.DropOnFull)
 
+	var roleChecker *role.Checker
+	if cfg.RoleCheck.Enabled {
+		roleChecker = role.New(role.Options{
+			Network:      cfg.Redis.Network,
+			Address:      cfg.Redis.Address,
+			Username:     cfg.Redis.Username,
+			Password:     cfg.Redis.Password,
+			DialTimeout:  cfg.RoleCheck.DialTimeout,
+			ReadTimeout:  cfg.RoleCheck.ReadTimeout,
+			Interval:     cfg.RoleCheck.Interval,
+			AllowReplica: cfg.RoleCheck.AllowReplica,
+		}, log.With("component", "role"), reg)
+		mon.SetGate(roleChecker)
+		if cfg.RoleCheck.AllowReplica {
+			log.Warn("role_check.allow_replica is true: watcher will run regardless of replication role")
+		}
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	installSignalHandlers(runCtx, cancel, log)
 
 	var wg sync.WaitGroup
+	if roleChecker != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := roleChecker.Run(runCtx); err != nil {
+				log.Error("role checker failed", "err", err)
+				report(err, "component", "role_checker")
+			}
+		}()
+	}
 	if cfg.Metrics.Enabled {
 		srv := metrics.NewServer(cfg.Metrics.Address, cfg.Metrics.Path, reg, log)
 		wg.Add(1)

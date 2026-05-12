@@ -17,14 +17,15 @@ const envPrefix = "REDIS_WATCHER_"
 
 // Config is the top-level configuration.
 type Config struct {
-	Redis    RedisConfig    `yaml:"redis"`
-	Log      LogConfig      `yaml:"log"`
-	Filter   FilterConfig   `yaml:"filter"`
-	Outputs  []OutputConfig `yaml:"outputs"`
-	Metrics  MetricsConfig  `yaml:"metrics"`
-	Alerts   AlertsConfig   `yaml:"alerts"`
-	Sentry   SentryConfig   `yaml:"sentry"`
-	Pipeline PipelineConfig `yaml:"pipeline"`
+	Redis     RedisConfig     `yaml:"redis"`
+	Log       LogConfig       `yaml:"log"`
+	Filter    FilterConfig    `yaml:"filter"`
+	RoleCheck RoleCheckConfig `yaml:"role_check"`
+	Outputs   []OutputConfig  `yaml:"outputs"`
+	Metrics   MetricsConfig   `yaml:"metrics"`
+	Alerts    AlertsConfig    `yaml:"alerts"`
+	Sentry    SentryConfig    `yaml:"sentry"`
+	Pipeline  PipelineConfig  `yaml:"pipeline"`
 }
 
 // RedisConfig holds the upstream Redis connection settings.
@@ -69,6 +70,19 @@ func (f FilterConfig) IgnoredSet() map[string]struct{} {
 		}
 	}
 	return set
+}
+
+// RoleCheckConfig configures the Sentinel-aware role detector. When the
+// detector is enabled, Redis Watcher pauses all work (MONITOR consumption,
+// outputs, metrics, alerts) while the upstream Redis is not the primary.
+// This is the right default in any Sentinel-managed deployment: the watcher
+// would otherwise produce duplicate audit trails on every replica.
+type RoleCheckConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	Interval     time.Duration `yaml:"interval"`
+	DialTimeout  time.Duration `yaml:"dial_timeout"`
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	AllowReplica bool          `yaml:"allow_replica"`
 }
 
 // OutputConfig describes one audit-log sink.
@@ -203,6 +217,13 @@ func Default() *Config {
 			Level:  "info",
 			Format: "json",
 		},
+		RoleCheck: RoleCheckConfig{
+			Enabled:      true,
+			Interval:     5 * time.Second,
+			DialTimeout:  3 * time.Second,
+			ReadTimeout:  3 * time.Second,
+			AllowReplica: false,
+		},
 		Metrics: MetricsConfig{
 			Enabled:       true,
 			Address:       ":9100",
@@ -324,6 +345,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Pipeline.ConsumerBuffer <= 0 {
 		c.Pipeline.ConsumerBuffer = 2000
+	}
+
+	if c.RoleCheck.Enabled {
+		if c.RoleCheck.Interval <= 0 {
+			c.RoleCheck.Interval = 5 * time.Second
+		}
+		if c.RoleCheck.DialTimeout <= 0 {
+			c.RoleCheck.DialTimeout = 3 * time.Second
+		}
+		if c.RoleCheck.ReadTimeout <= 0 {
+			c.RoleCheck.ReadTimeout = 3 * time.Second
+		}
 	}
 	return nil
 }
