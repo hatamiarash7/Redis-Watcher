@@ -7,86 +7,88 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// telegramRoundTripper rewrites requests directed at api.telegram.org to a
-// test server URL so we don't actually hit Telegram during tests.
-type telegramRoundTripper struct {
-	target string
-	last   *http.Request
-	body   []byte
+// telegramRecorder is a small httptest helper that captures the most recent
+// request body and path so tests can assert what the channel sent.
+type telegramRecorder struct {
+	srv      *httptest.Server
+	body     atomic.Pointer[[]byte]
+	path     atomic.Pointer[string]
+	respCode int
+	respBody string
 }
 
-func (r *telegramRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	b, _ := io.ReadAll(req.Body)
-	req.Body = io.NopCloser(strings.NewReader(string(b)))
-	r.body = b
-	r.last = req
-	resp, err := http.DefaultTransport.RoundTrip(rewrite(req, r.target))
-	return resp, err
+func newTelegramRecorder(code int, body string) *telegramRecorder {
+	r := &telegramRecorder{respCode: code, respBody: body}
+	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		buf, _ := io.ReadAll(req.Body)
+		r.body.Store(&buf)
+		p := req.URL.Path
+		r.path.Store(&p)
+		w.WriteHeader(r.respCode)
+		_, _ = w.Write([]byte(r.respBody))
+	}))
+	return r
 }
 
-func rewrite(req *http.Request, target string) *http.Request {
-	clone := req.Clone(req.Context())
-	clone.URL.Scheme = "http"
-	clone.URL.Host = strings.TrimPrefix(target, "http://")
-	clone.Host = clone.URL.Host
-	return clone
+func (r *telegramRecorder) URL() string { return r.srv.URL }
+func (r *telegramRecorder) close()      { r.srv.Close() }
+
+func (r *telegramRecorder) decode(t *testing.T) map[string]any {
+	t.Helper()
+	bp := r.body.Load()
+	if bp == nil {
+		t.Fatal("no request received")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(*bp, &m); err != nil {
+		t.Fatalf("decode body: %v (%q)", err, string(*bp))
+	}
+	return m
 }
 
 func TestTelegramOmitsThreadIDWhenZero(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer srv.Close()
+	rec := newTelegramRecorder(http.StatusOK, `{"ok":true}`)
+	defer rec.close()
 
-	ch := NewTelegramChannel(TelegramOptions{BotToken: "x", ChatID: "@grp", Timeout: time.Second})
-	rt := &telegramRoundTripper{target: srv.URL}
-	ch.client.Transport = rt
+	ch := NewTelegramChannel(TelegramOptions{
+		Endpoint: rec.URL(),
+		BotToken: "tok", ChatID: "@grp",
+		Timeout: time.Second,
+	})
 
 	if err := ch.Send(context.Background(), Alert{Command: "FLUSHALL", Source: "1.1.1.1:1", Reason: "test"}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(rt.body, &payload); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
+	payload := rec.decode(t)
 	if _, present := payload["message_thread_id"]; present {
-		t.Errorf("message_thread_id should be omitted when thread_id=0, got body=%s", rt.body)
-	}
-	if payload["chat_id"] != "@grp" {
-		t.Errorf("chat_id: %v", payload["chat_id"])
+		t.Errorf("message_thread_id should be omitted when thread_id=0")
 	}
 }
 
 func TestTelegramSendsThreadIDWhenSet(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer srv.Close()
+	rec := newTelegramRecorder(http.StatusOK, `{"ok":true}`)
+	defer rec.close()
 
 	ch := NewTelegramChannel(TelegramOptions{
-		BotToken: "x", ChatID: "@grp", ThreadID: 42, Timeout: time.Second,
+		Endpoint: rec.URL(),
+		BotToken: "tok", ChatID: "@grp", ThreadID: 42,
+		Timeout: time.Second,
 	})
-	rt := &telegramRoundTripper{target: srv.URL}
-	ch.client.Transport = rt
 
 	if err := ch.Send(context.Background(), Alert{Command: "FLUSHALL", Source: "1.1.1.1:1", Reason: "test"}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(rt.body, &payload); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
+	payload := rec.decode(t)
 	v, ok := payload["message_thread_id"]
 	if !ok {
-		t.Fatalf("message_thread_id missing from body: %s", rt.body)
+		t.Fatalf("message_thread_id missing")
 	}
 	if got, ok := v.(float64); !ok || int(got) != 42 {
 		t.Errorf("thread id wrong: got=%v want=42", v)
@@ -94,17 +96,52 @@ func TestTelegramSendsThreadIDWhenSet(t *testing.T) {
 }
 
 func TestTelegramSurfacesAPIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"ok":false,"description":"chat not found"}`))
-	}))
-	defer srv.Close()
+	rec := newTelegramRecorder(http.StatusBadRequest, `{"ok":false,"description":"chat not found"}`)
+	defer rec.close()
 
-	ch := NewTelegramChannel(TelegramOptions{BotToken: "x", ChatID: "missing", Timeout: time.Second})
-	ch.client.Transport = &telegramRoundTripper{target: srv.URL}
+	ch := NewTelegramChannel(TelegramOptions{
+		Endpoint: rec.URL(),
+		BotToken: "tok", ChatID: "missing",
+		Timeout: time.Second,
+	})
 
 	err := ch.Send(context.Background(), Alert{Command: "X"})
 	if err == nil || !strings.Contains(err.Error(), "400") {
 		t.Errorf("expected 400 error, got %v", err)
+	}
+}
+
+func TestTelegramCustomEndpointAndTokenInPath(t *testing.T) {
+	rec := newTelegramRecorder(http.StatusOK, `{"ok":true}`)
+	defer rec.close()
+
+	// Trailing slash should be normalized away by the constructor.
+	ch := NewTelegramChannel(TelegramOptions{
+		Endpoint: rec.URL() + "/",
+		BotToken: "1234:abcd", ChatID: "@grp",
+		Timeout: time.Second,
+	})
+
+	if err := ch.Send(context.Background(), Alert{Command: "X"}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if got := ch.endpoint; got != rec.URL() {
+		t.Errorf("endpoint not normalized: got=%q", got)
+	}
+
+	pp := rec.path.Load()
+	if pp == nil {
+		t.Fatal("no request received")
+	}
+	if want := "/bot1234:abcd/sendMessage"; *pp != want {
+		t.Errorf("path: got=%q want=%q", *pp, want)
+	}
+}
+
+func TestTelegramDefaultEndpoint(t *testing.T) {
+	ch := NewTelegramChannel(TelegramOptions{BotToken: "x", ChatID: "y"})
+	if ch.endpoint != DefaultTelegramEndpoint {
+		t.Errorf("default endpoint: got=%q want=%q", ch.endpoint, DefaultTelegramEndpoint)
 	}
 }

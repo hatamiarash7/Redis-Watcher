@@ -167,6 +167,12 @@ alerts:
   # Notification channels
   telegram:
     enabled: false
+    # Optional override of the Telegram Bot API base URL. Defaults to
+    # "https://api.telegram.org" when empty. Useful for self-hosted Bot API
+    # servers (https://core.telegram.org/bots/api#using-a-local-bot-api-server)
+    # or for routing through an internal HTTP/SNI proxy. Trailing slash is
+    # optional and stripped automatically.
+    endpoint: ""
     bot_token: ""
     chat_id: "" # may be a user id or "@channel"
     # Optional Telegram topic id. When non-zero this is sent as

@@ -7,11 +7,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
+// DefaultTelegramEndpoint is the official Telegram Bot API base URL. It is
+// used when TelegramOptions.Endpoint is empty.
+const DefaultTelegramEndpoint = "https://api.telegram.org"
+
 // TelegramChannel sends alerts via the Telegram Bot API.
 type TelegramChannel struct {
+	endpoint string
 	botToken string
 	chatID   string
 	threadID int
@@ -20,6 +26,14 @@ type TelegramChannel struct {
 
 // TelegramOptions configures a TelegramChannel.
 type TelegramOptions struct {
+	// Endpoint is the base URL of the Bot API. Leave empty to use the
+	// official "https://api.telegram.org". Useful values:
+	//
+	//   - Self-hosted Bot API server: https://bot-api.internal:8081
+	//   - Reverse-proxied access: https://tg-proxy.example.com
+	//
+	// A trailing slash is allowed and normalized away.
+	Endpoint string
 	BotToken string
 	ChatID   string
 	// ThreadID, when non-zero, is sent as `message_thread_id` so messages
@@ -34,7 +48,12 @@ func NewTelegramChannel(opts TelegramOptions) *TelegramChannel {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
 	}
+	endpoint := strings.TrimRight(opts.Endpoint, "/")
+	if endpoint == "" {
+		endpoint = DefaultTelegramEndpoint
+	}
 	return &TelegramChannel{
+		endpoint: endpoint,
 		botToken: opts.BotToken,
 		chatID:   opts.ChatID,
 		threadID: opts.ThreadID,
@@ -65,7 +84,7 @@ func (t *TelegramChannel) Send(ctx context.Context, a Alert) error {
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", t.botToken)
+	url := fmt.Sprintf("%s/bot%s/sendMessage", t.endpoint, t.botToken)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err

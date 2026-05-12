@@ -136,7 +136,12 @@ type RateLimitConfig struct {
 
 // TelegramConfig configures Telegram bot notifications.
 type TelegramConfig struct {
-	Enabled  bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// Endpoint optionally overrides the Telegram Bot API base URL. Leave
+	// empty (the default) to use the official "https://api.telegram.org".
+	// Useful for self-hosted Bot API instances or for routing through an
+	// HTTP/SNI proxy.
+	Endpoint string `yaml:"endpoint"`
 	BotToken string `yaml:"bot_token"`
 	ChatID   string `yaml:"chat_id"`
 	// ThreadID is the optional `message_thread_id` parameter used by the
@@ -380,6 +385,7 @@ func (c *Config) Validate() error {
 //	REDIS_WATCHER_SENTRY_ENABLED
 //	REDIS_WATCHER_SENTRY_ENVIRONMENT
 //	REDIS_WATCHER_SENTRY_RELEASE
+//	REDIS_WATCHER_ALERTS_TELEGRAM_ENDPOINT
 //	REDIS_WATCHER_ALERTS_TELEGRAM_BOT_TOKEN
 //	REDIS_WATCHER_ALERTS_TELEGRAM_CHAT_ID
 //	REDIS_WATCHER_ALERTS_TELEGRAM_THREAD_ID
@@ -417,6 +423,7 @@ func applyEnv(c *Config) {
 	boolVar("SENTRY_ENABLED", &c.Sentry.Enabled)
 	str("SENTRY_ENVIRONMENT", &c.Sentry.Environment)
 	str("SENTRY_RELEASE", &c.Sentry.Release)
+	str("ALERTS_TELEGRAM_ENDPOINT", &c.Alerts.Telegram.Endpoint)
 	str("ALERTS_TELEGRAM_BOT_TOKEN", &c.Alerts.Telegram.BotToken)
 	str("ALERTS_TELEGRAM_CHAT_ID", &c.Alerts.Telegram.ChatID)
 	intVar("ALERTS_TELEGRAM_THREAD_ID", &c.Alerts.Telegram.ThreadID)

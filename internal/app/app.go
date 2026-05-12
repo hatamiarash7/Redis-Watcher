@@ -307,6 +307,7 @@ func buildAlertEngine(cfg *config.Config, reg *metrics.Registry, log *slog.Logge
 	var channels []alert.Channel
 	if cfg.Alerts.Telegram.Enabled {
 		channels = append(channels, alert.NewTelegramChannel(alert.TelegramOptions{
+			Endpoint: cfg.Alerts.Telegram.Endpoint,
 			BotToken: cfg.Alerts.Telegram.BotToken,
 			ChatID:   cfg.Alerts.Telegram.ChatID,
 			ThreadID: cfg.Alerts.Telegram.ThreadID,

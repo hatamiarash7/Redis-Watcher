@@ -165,6 +165,39 @@ func TestTelegramThreadIDFromEnv(t *testing.T) {
 	}
 }
 
+func TestTelegramEndpointFromYAML(t *testing.T) {
+	path := writeTempConfig(t, `
+redis:
+  network: tcp
+  address: 127.0.0.1:6379
+alerts:
+  enabled: true
+  telegram:
+    enabled: true
+    endpoint: https://bot-api.internal:8081
+    bot_token: t
+    chat_id: c
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Alerts.Telegram.Endpoint; got != "https://bot-api.internal:8081" {
+		t.Errorf("endpoint: %q", got)
+	}
+}
+
+func TestTelegramEndpointFromEnv(t *testing.T) {
+	t.Setenv("REDIS_WATCHER_ALERTS_TELEGRAM_ENDPOINT", "https://tg-proxy.example.com")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Alerts.Telegram.Endpoint; got != "https://tg-proxy.example.com" {
+		t.Errorf("env endpoint: %q", got)
+	}
+}
+
 func TestFilterIgnoredSetNormalizesAndDeduplicates(t *testing.T) {
 	f := FilterConfig{IgnoredCommands: []string{"ping", "PING", "  Info ", "", "AUTH"}}
 	got := f.IgnoredSet()
