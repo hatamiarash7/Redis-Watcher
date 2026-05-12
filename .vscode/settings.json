@@ -11,9 +11,12 @@
     "GOLINT",
     "gomod",
     "healthz",
+    "maxmemory",
     "natefinch",
+    "NOAUTH",
     "nonroot",
     "nosec",
+    "notanumber",
     "nsec",
     "perr",
     "promhttp",
@@ -29,6 +32,8 @@
     "trimpath",
     "unixsocket",
     "unixsocketperm",
+    "unsub",
+    "WRONGPASS",
     "XGROUP",
     "XINFO"
   ]
