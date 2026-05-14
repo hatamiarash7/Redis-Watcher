@@ -222,7 +222,7 @@ nest correctly. Use `SetSpanTag` for low-cardinality, indexed values
 
 - **New config field**: edit the struct in `internal/config/config.go`,
   give it a `yaml:` tag, set its default in `Default()`, validate +
-  normalise it in `Validate()`, optionally expose an env override in
+  normalize it in `Validate()`, optionally expose an env override in
   `applyEnv()` (use `strVar` / `boolVar` / `intVar` / `sliceVar` /
   `durVar`), and document it in
   [`config.example.yaml`](config.example.yaml) with a comment.
@@ -237,7 +237,7 @@ nest correctly. Use `SetSpanTag` for low-cardinality, indexed values
   a `Send(ctx, Alert) error` method, a `Close`), add a typed
   `XxxOptions` struct, wire it in `app.buildAlertEngine`, add its
   config struct under `AlertsConfig`, and bump the README "Alerts"
-  section. The retry/backoff/Sentry behaviour is provided by the
+  section. The retry/backoff/Sentry behavior is provided by the
   engine — don't reimplement it.
 - **New Prometheus metric**: declare and register it in
   `internal/metrics/metrics.go` (under the right `register*` group),
