@@ -17,7 +17,8 @@ generic webhooks, Prometheus Pushgateway).
   - [Architecture](#architecture)
   - [Quick start](#quick-start)
     - [Local Go build](#local-go-build)
-    - [Docker Compose (recommended for kicking the tires)](#docker-compose-recommended-for-kicking-the-tires)
+    - [Docker](#docker)
+      - [Docker Compose](#docker-compose)
   - [Configuration](#configuration)
     - [Useful environment variables](#useful-environment-variables)
   - [Sentinel-aware role detection](#sentinel-aware-role-detection)
@@ -28,7 +29,7 @@ generic webhooks, Prometheus Pushgateway).
     - [Error / drop counters](#error--drop-counters)
     - [Latency histograms](#latency-histograms)
     - [Pipeline depth (back-pressure)](#pipeline-depth-back-pressure)
-    - [Process + Go runtime](#process--go-runtime)
+    - [Process](#process)
     - [Health endpoints](#health-endpoints)
   - [Alerts](#alerts)
     - [Retry (`alerts.retry`)](#retry-alertsretry)
@@ -111,7 +112,17 @@ make build
 ./bin/redis-watcher --config config.yaml
 ```
 
-### Docker Compose (recommended for kicking the tires)
+### Docker
+
+```bash
+docker run -d --name redis-watcher \
+  -p 9100:9100 \
+  -v ./config.yaml:/etc/redis-watcher/config.yaml \
+  -v ./redis-socket:/var/run/redis \
+  hatamiarash7/redis-watcher:latest
+```
+
+#### Docker Compose
 
 ```bash
 cp config.example.yaml config.yaml
@@ -298,11 +309,10 @@ internal channel on every scrape. Queues:
 > ratio above ~0.5 means the consumer is too slow; >0.9 means drops are
 > imminent.
 
-### Process + Go runtime
+### Process
 
 The standard collectors are wired in:
 
-- `go_goroutines`, `go_memstats_*`, `go_gc_duration_seconds`, `go_sched_*`
 - `redis_watcher_process_resident_memory_bytes`,
   `redis_watcher_process_cpu_seconds_total`,
   `redis_watcher_process_open_fds`, etc.
@@ -396,13 +406,13 @@ REDIS_WATCHER_ALERTS_RETRY_MAX_BACKOFF=30s
 ## Development
 
 ```bash
-make tidy            # go mod tidy
-make fmt             # go fmt + goimports
-make vet lint        # static checks
-make test            # unit tests with race detector
-make test-cover      # unit tests + coverage report
+make tidy              # go mod tidy
+make fmt               # go fmt + goimports
+make vet lint          # static checks
+make test              # unit tests with race detector
+make test-cover        # unit tests + coverage report
 make test-integration  # against a running Redis instance
-make docker          # build the OCI image
+make docker            # build the OCI image
 ```
 
 See [`Makefile`](Makefile) for the full list of targets.
