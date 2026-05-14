@@ -12,6 +12,32 @@ generic webhooks, Prometheus Pushgateway).
 > [!caution]
 > **Performance note** — `MONITOR` is expensive on busy Redis instances because the server has to serialize every command into ASCII for the watcher. Use Redis Watcher on a side replica or on hosts where the additional CPU cost is acceptable. See [Redis docs on MONITOR](https://redis.io/docs/latest/commands/monitor/).
 
+- [Redis Watcher](#redis-watcher)
+  - [Features](#features)
+  - [Architecture](#architecture)
+  - [Quick start](#quick-start)
+    - [Local Go build](#local-go-build)
+    - [Docker Compose (recommended for kicking the tires)](#docker-compose-recommended-for-kicking-the-tires)
+  - [Configuration](#configuration)
+    - [Useful environment variables](#useful-environment-variables)
+  - [Sentinel-aware role detection](#sentinel-aware-role-detection)
+  - [Filtering noisy commands](#filtering-noisy-commands)
+  - [Prometheus metrics](#prometheus-metrics)
+    - [Health gauges (primary alert sources)](#health-gauges-primary-alert-sources)
+    - [Throughput counters](#throughput-counters)
+    - [Error / drop counters](#error--drop-counters)
+    - [Latency histograms](#latency-histograms)
+    - [Pipeline depth (back-pressure)](#pipeline-depth-back-pressure)
+    - [Process + Go runtime](#process--go-runtime)
+    - [Health endpoints](#health-endpoints)
+  - [Alerts](#alerts)
+    - [Retry (`alerts.retry`)](#retry-alertsretry)
+  - [Production checklist](#production-checklist)
+  - [Development](#development)
+  - [💛 Support](#-support)
+  - [🤝 Contributing](#-contributing)
+  - [🐛 Issues](#-issues)
+
 ## Features
 
 - Connects to Redis over **unix socket** or TCP
