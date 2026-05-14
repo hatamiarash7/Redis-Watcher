@@ -97,4 +97,4 @@ clean: ## Remove build artifacts.
 	rm -rf $(BIN_DIR) $(COVER_PROFILE) coverage.html
 
 .PHONY: ci
-ci: vet lint test ## Run the checks executed in CI.
+ci: vet lint test test-integration ## Run the checks executed in CI.
