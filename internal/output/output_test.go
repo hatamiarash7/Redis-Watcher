@@ -220,3 +220,67 @@ type countingSink struct{ n atomic.Int64 }
 func (*countingSink) Name() string               { return "count" }
 func (c *countingSink) Write(*event.Event) error { c.n.Add(1); return nil }
 func (*countingSink) Close() error               { return nil }
+
+// flakySink alternates between failing and succeeding, driven by a
+// scripted sequence of errors. It is used to verify that the Consumer's
+// Sentry-report throttle resets on a successful write.
+type flakySink struct {
+	mu     sync.Mutex
+	script []error
+	idx    int
+}
+
+func (*flakySink) Name() string { return "flaky" }
+func (*flakySink) Close() error { return nil }
+func (s *flakySink) Write(*event.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx >= len(s.script) {
+		return nil
+	}
+	err := s.script[s.idx]
+	s.idx++
+	return err
+}
+
+func TestConsumerWriteOneTransitionThrottle(t *testing.T) {
+	t.Parallel()
+	// Three failures, one success, two more failures. We expect:
+	//   - failing flag set after the first failure
+	//   - subsequent failures keep it set (no reset)
+	//   - success clears it
+	//   - the next failure flips it true again
+	sink := &flakySink{script: []error{
+		errBoom("e1"), errBoom("e2"), errBoom("e3"),
+		nil,
+		errBoom("e4"), errBoom("e5"),
+	}}
+	c := NewConsumer(sink, 1, false, nil)
+
+	c.writeOne(sampleEvent())
+	if !c.failing.Load() {
+		t.Fatal("failing should be true after first failure")
+	}
+	c.writeOne(sampleEvent())
+	c.writeOne(sampleEvent())
+	if c.Counters().Errors != 3 {
+		t.Fatalf("expected 3 errors, got %d", c.Counters().Errors)
+	}
+
+	c.writeOne(sampleEvent())
+	if c.failing.Load() {
+		t.Fatal("failing should reset on success")
+	}
+	if c.Counters().Written != 1 {
+		t.Fatalf("expected 1 written, got %d", c.Counters().Written)
+	}
+
+	c.writeOne(sampleEvent())
+	if !c.failing.Load() {
+		t.Fatal("failing should be true again after second outage starts")
+	}
+}
+
+type errBoom string
+
+func (e errBoom) Error() string { return string(e) }

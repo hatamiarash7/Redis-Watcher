@@ -208,15 +208,32 @@ alerts:
     labels:
       instance: redis-prod-1
 
-# ---- Sentry (error tracking) --------------------------------------------------
+# ---- Sentry (error tracking + performance) -----------------------------------
+# All project errors are captured by default when Sentry is enabled. Currently
+# instrumented sites include: alert send failures (telegram / webhook /
+# pushgateway), upstream MONITOR connection failures, role-probe failures,
+# parse errors, output-write failures (transition-only, not every event), and
+# panics in any /metrics, /healthz or /readyz handler.
+#
+# Tracing is opt-in. When traces_sample_rate > 0 the watcher emits the
+# following transactions:
+#   - alert.dispatch        (one per fired alert; child http.client spans per
+#                            channel — telegram / webhook / pushgateway)
+#   - role.probe            (one per INFO replication poll)
+#   - http.server           (one per /metrics, /healthz, /readyz request)
+#
+# On busy clusters alerts can be high-volume; sample at 0.01–0.05 in
+# production unless you specifically need full-fidelity traces.
 sentry:
   enabled: false
   dsn: ""
   environment: production
   release: ""
+  # Error sampling. 1.0 = report every error.
   sample_rate: 1.0
+  # Performance sampling. 0.0 disables tracing entirely.
   traces_sample_rate: 0.0
-  # Process events at this level or above. Errors are always sent.
+  # Attach stacktraces to non-exception events (informational captures).
   attach_stacktrace: true
 
 # ---- Internal pipeline tuning -------------------------------------------------

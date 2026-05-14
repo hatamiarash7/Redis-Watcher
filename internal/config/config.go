@@ -175,7 +175,22 @@ type PushgatewayConfig struct {
 	Labels   map[string]string `yaml:"labels"`
 }
 
-// SentryConfig configures error tracking.
+// SentryConfig configures error tracking and (optionally) performance
+// monitoring.
+//
+// Tracing is opt-in via traces_sample_rate. When enabled, the watcher
+// emits transactions for:
+//
+//   - alert.dispatch        — one per fired alert, with child http.client
+//     spans per channel (telegram / webhook / pushgateway). Failures set
+//     the span status to internal_error.
+//   - role.probe            — one per `INFO replication` poll against the
+//     upstream Redis. Useful for spotting failover-detection latency.
+//   - http.server           — one per /metrics, /healthz, /readyz scrape.
+//
+// Values between 0.0 and 1.0 enable probabilistic sampling. Production
+// users typically set this to a small value (0.01 – 0.05) because the
+// watcher fires many alerts on busy clusters.
 type SentryConfig struct {
 	Enabled          bool    `yaml:"enabled"`
 	DSN              string  `yaml:"dsn"`

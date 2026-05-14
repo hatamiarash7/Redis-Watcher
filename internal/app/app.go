@@ -139,6 +139,7 @@ func Run(ctx context.Context, configPath string, info BuildInfo) error {
 			defer wg.Done()
 			if err := outMgr.Run(runCtx); err != nil {
 				log.Error("outputs failed", "err", err)
+				report(err, "component", "outputs")
 			}
 		}()
 	}
@@ -149,6 +150,7 @@ func Run(ctx context.Context, configPath string, info BuildInfo) error {
 			defer wg.Done()
 			if err := alertEngine.Run(runCtx); err != nil {
 				log.Error("alert engine failed", "err", err)
+				report(err, "component", "alert_engine")
 			}
 		}()
 	}

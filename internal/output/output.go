@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hatamiarash7/redis-watcher/internal/event"
+	"github.com/hatamiarash7/redis-watcher/internal/sentryx"
 )
 
 // Sink is the writer interface implemented by every output backend.
@@ -35,6 +36,11 @@ type Consumer struct {
 	dropped atomic.Uint64
 	written atomic.Uint64
 	errors  atomic.Uint64
+	// failing tracks whether the last write attempt errored. It is used to
+	// throttle Sentry reports: we capture an event only on the
+	// success-to-failure transition so sustained outages don't flood the
+	// project. A successful write resets the flag.
+	failing atomic.Bool
 	drop    bool
 	log     *slog.Logger
 }
@@ -91,6 +97,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	defer func() {
 		if err := c.sink.Close(); err != nil {
 			c.log.Warn("close error", "err", err)
+			sentryx.Report(err, "stage", "output.close", "output", c.sink.Name())
 		}
 	}()
 
@@ -100,14 +107,32 @@ func (c *Consumer) Run(ctx context.Context) error {
 			c.drainAfterShutdown()
 			return nil
 		case ev := <-c.in:
-			if err := c.sink.Write(ev); err != nil {
-				c.errors.Add(1)
-				c.log.Error("write failed", "err", err)
-				continue
-			}
-			c.written.Add(1)
+			c.writeOne(ev)
 		}
 	}
+}
+
+// writeOne writes one event to the sink and reports failures.
+//
+// Sentry capture is intentionally throttled: a write error on a busy
+// stream can fire on every event during an outage, so we only capture on
+// the transition from healthy to failing. Returning to healthy resets the
+// state so the next failure is captured again.
+func (c *Consumer) writeOne(ev *event.Event) {
+	if err := c.sink.Write(ev); err != nil {
+		c.errors.Add(1)
+		c.log.Error("write failed", "err", err)
+		if !c.failing.Swap(true) {
+			sentryx.Report(err,
+				"stage", "output.write",
+				"output", c.sink.Name(),
+				"command", ev.Command,
+			)
+		}
+		return
+	}
+	c.written.Add(1)
+	c.failing.Store(false)
 }
 
 // drainAfterShutdown writes any events buffered in the channel using a short
@@ -120,9 +145,17 @@ func (c *Consumer) drainAfterShutdown() {
 		case ev := <-c.in:
 			if err := c.sink.Write(ev); err != nil {
 				c.errors.Add(1)
+				if !c.failing.Swap(true) {
+					sentryx.Report(err,
+						"stage", "output.write.shutdown",
+						"output", c.sink.Name(),
+						"command", ev.Command,
+					)
+				}
 				return
 			}
 			c.written.Add(1)
+			c.failing.Store(false)
 		case <-deadline.C:
 			return
 		default:

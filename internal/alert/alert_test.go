@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hatamiarash7/redis-watcher/internal/event"
+	"github.com/hatamiarash7/redis-watcher/internal/sentryx/sentryxtest"
 )
 
 type fakeChannel struct {
@@ -170,6 +171,59 @@ func TestEngineReportsErrors(t *testing.T) {
 	go func() { _ = e.Run(ctx) }()
 	e.Submit(newEvent("FLUSHALL", "", nil, "1.1.1.1"))
 	waitFor(t, func() bool { return rep.errors.Load() == 1 && rep.suspicious.Load() == 1 }, time.Second)
+}
+
+func TestEngineReportsFailedSendToSentry(t *testing.T) {
+	// Tracing disabled: only errors should reach Sentry — no transactions
+	// to confuse the assertion.
+	rec := sentryxtest.Swap(t, false)
+	failing := &fakeChannel{name: "telegram", err: errors.New("api unreachable")}
+	e, err := New(Options{
+		Channels:    []Channel{failing},
+		Commands:    []string{"FLUSHALL"},
+		BufferSize:  4,
+		SendTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = e.Run(ctx) }()
+	e.Submit(newEvent("FLUSHALL", "", nil, "10.0.0.5"))
+
+	if !rec.WaitFor(time.Second, func(ev sentryxtest.CapturedEvent) bool {
+		if len(ev.Exceptions) == 0 || !strings.Contains(ev.Exceptions[0], "api unreachable") {
+			return false
+		}
+		return ev.Details["channel"] == "telegram" && ev.Details["source_ip"] == "10.0.0.5"
+	}) {
+		t.Fatalf("expected sentry event for failed alert; got %+v", rec.Events())
+	}
+}
+
+func TestEngineEmitsTransactionsForAlertDispatch(t *testing.T) {
+	rec := sentryxtest.Swap(t, true)
+	ch := &fakeChannel{name: "telegram"}
+	e, err := New(Options{
+		Channels:    []Channel{ch},
+		Commands:    []string{"FLUSHALL"},
+		BufferSize:  4,
+		SendTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = e.Run(ctx) }()
+	e.Submit(newEvent("FLUSHALL", "", nil, "10.0.0.5"))
+
+	if !rec.WaitFor(time.Second, func(ev sentryxtest.CapturedEvent) bool {
+		return ev.Type == "transaction" && ev.Transaction == "alert.dispatch" && ev.Tags["command"] == "FLUSHALL"
+	}) {
+		t.Fatalf("expected alert.dispatch transaction with command tag; got %+v", rec.Events())
+	}
 }
 
 type countingReporter struct {

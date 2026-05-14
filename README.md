@@ -25,7 +25,11 @@ generic webhooks, Prometheus Pushgateway).
 - **Alerts** on suspicious commands (`FLUSH*`, `CONFIG`, `ACL`, `KEYS`,
   `EVAL`, `SCRIPT`, `SHUTDOWN`, `DEBUG`, …) with per-(command, IP) rate
   limiting; delivered via Telegram, webhook, or Pushgateway
-- **Sentry** integration for runtime error visibility
+- **Sentry** integration for runtime error visibility — all subsystem
+  failures (alert send failures, MONITOR disconnects, role-probe failures,
+  output write failures, parse errors, panics on the metrics server) are
+  captured. Performance tracing is opt-in via `traces_sample_rate` and
+  emits `alert.dispatch`, `role.probe` and `http.server` transactions
 - Drop-on-full backpressure policy to protect the MONITOR connection
 
 ## Architecture
@@ -242,8 +246,12 @@ exceeded the event is recorded in metrics but not pushed downstream.
       `rate(redis_watcher_dropped_events_total[5m])`,
       `rate(redis_watcher_monitor_reconnects_total[5m]) > 0`,
       `rate(redis_watcher_suspicious_commands_total[5m])`.
-- [ ] Capture Sentry events for the `monitor`, `metrics_server`, and
-      `outputs` components.
+- [ ] Configure Sentry. Errors are captured automatically for every
+      subsystem (monitor connection, role probes, alert sends, output
+      writes, /metrics handlers). For performance tracing set
+      `sentry.traces_sample_rate` to a small value (0.01–0.05 is plenty);
+      transactions named `alert.dispatch`, `role.probe`, and `http.server`
+      surface latency for the operationally interesting paths.
 - [ ] Make sure the unix socket has restricted permissions
       (`unixsocketperm 770` in `redis.conf`).
 

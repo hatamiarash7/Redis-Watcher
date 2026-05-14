@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/hatamiarash7/redis-watcher/internal/resp"
+	"github.com/hatamiarash7/redis-watcher/internal/sentryx"
 )
 
 // Role is the value of "role:" in `INFO replication`.
@@ -191,12 +192,25 @@ func (c *Checker) Run(ctx context.Context) error {
 }
 
 func (c *Checker) probeOnce(ctx context.Context) {
-	role, err := c.queryRole(ctx)
+	// Trace each probe so operators can see the failover-detection
+	// latency in Sentry performance and correlate slow probes with
+	// underlying Redis incidents.
+	spanCtx, finish := sentryx.StartSpan(ctx, "db.redis.info", "role.probe")
+	sentryx.SetSpanData(spanCtx, "redis_address", c.opts.Address)
+	sentryx.SetSpanData(spanCtx, "redis_network", c.opts.Network)
+
+	role, err := c.queryRole(spanCtx)
+	finish(err)
 	if err != nil {
 		c.mu.Lock()
 		c.probeErr = err
 		c.mu.Unlock()
 		c.log.Warn("role probe failed", "err", err)
+		sentryx.Capture(spanCtx, err,
+			"stage", "role.probe",
+			"redis_address", c.opts.Address,
+			"redis_network", c.opts.Network,
+		)
 		return
 	}
 

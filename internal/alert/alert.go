@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hatamiarash7/redis-watcher/internal/event"
+	"github.com/hatamiarash7/redis-watcher/internal/sentryx"
 )
 
 // Channel is a notification backend.
@@ -202,21 +203,55 @@ func (e *Engine) handle(ctx context.Context, ev *event.Event) {
 		Event:     ev,
 	}
 
+	// One transaction per fired alert. Per-channel spans nest under this
+	// so each notification's latency and outcome is visible end-to-end in
+	// Sentry's performance UI.
+	txCtx, finishTx := sentryx.StartSpan(ctx, "task.alert", "alert.dispatch")
+	sentryx.SetSpanTag(txCtx, "command", ev.Command)
+	sentryx.SetSpanData(txCtx, "source_ip", ev.Source.IP)
+	sentryx.SetSpanData(txCtx, "db", ev.DB)
+
+	var dispatchErr error
 	for _, ch := range e.channels {
-		sendCtx, cancel := context.WithTimeout(ctx, e.timeout)
-		err := ch.Send(sendCtx, a)
-		cancel()
-		if err != nil {
-			e.log.Error("alert send failed", "channel", ch.Name(), "err", err)
-			if e.rep != nil {
-				e.rep.AlertError(ch.Name(), err)
-			}
-			continue
-		}
-		if e.rep != nil {
-			e.rep.AlertSent(ch.Name(), ev.Command)
+		if err := e.sendOne(txCtx, ch, a, ev); err != nil && dispatchErr == nil {
+			dispatchErr = err
 		}
 	}
+	finishTx(dispatchErr)
+}
+
+// sendOne dispatches a single alert to ch, traces it as a child span and
+// reports failures through both the metrics reporter and Sentry. The
+// returned error is the original ch.Send error (or nil) for the caller's
+// aggregation purposes.
+func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Event) error {
+	spanCtx, finish := sentryx.StartSpan(ctx, "http.client", "alert.send."+ch.Name())
+	sentryx.SetSpanTag(spanCtx, "channel", ch.Name())
+	sentryx.SetSpanTag(spanCtx, "command", ev.Command)
+
+	sendCtx, cancel := context.WithTimeout(spanCtx, e.timeout)
+	err := ch.Send(sendCtx, a)
+	cancel()
+	finish(err)
+
+	if err != nil {
+		e.log.Error("alert send failed", "channel", ch.Name(), "err", err)
+		sentryx.Capture(spanCtx, err,
+			"channel", ch.Name(),
+			"command", ev.FullCommand(),
+			"source_ip", ev.Source.IP,
+			"db", ev.DB,
+			"reason", a.Reason,
+		)
+		if e.rep != nil {
+			e.rep.AlertError(ch.Name(), err)
+		}
+		return err
+	}
+	if e.rep != nil {
+		e.rep.AlertSent(ch.Name(), ev.Command)
+	}
+	return nil
 }
 
 func (e *Engine) match(ev *event.Event) (string, bool) {

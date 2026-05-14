@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/hatamiarash7/redis-watcher/internal/event"
+	"github.com/hatamiarash7/redis-watcher/internal/sentryx"
 )
 
 // Registry bundles every metric exported by the application.
@@ -228,13 +229,17 @@ func NewServer(addr, path string, reg *Registry, log *slog.Logger) *Server {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// sentryx.WrapHTTP attaches a per-request hub and (if tracing is
+	// enabled) starts an http.server transaction for each scrape, so panics
+	// in any of the handlers above are still captured. It is a no-op when
+	// Sentry is disabled.
 	return &Server{
 		addr: addr,
 		path: path,
 		log:  log,
 		srv: &http.Server{
 			Addr:              addr,
-			Handler:           mux,
+			Handler:           sentryx.WrapHTTP(mux),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
