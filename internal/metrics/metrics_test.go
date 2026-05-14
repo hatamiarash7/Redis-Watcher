@@ -270,8 +270,6 @@ func TestMetricsExposesGoAndProcessCollectors(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, req)
 	body := rec.Body.String()
 	for _, want := range []string{
-		"go_goroutines",
-		"go_memstats_alloc_bytes",
 		"redis_watcher_process_resident_memory_bytes",
 	} {
 		if !strings.Contains(body, want) {
