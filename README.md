@@ -3,11 +3,10 @@
 [![Go Version](https://img.shields.io/badge/go-1.26+-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Image size](https://img.shields.io/docker/image-size/hatamiarash7/redis-watcher/latest?maxAge=30)](https://hub.docker.com/r/hatamiarash7/redis-watcher/)
+[![Docker](https://github.com/hatamiarash7/Redis-Watcher/actions/workflows/docker.yml/badge.svg)](https://github.com/hatamiarash7/Redis-Watcher/actions/workflows/docker.yml)
+[![Release](https://github.com/hatamiarash7/Redis-Watcher/actions/workflows/release.yml/badge.svg)](https://github.com/hatamiarash7/Redis-Watcher/actions/workflows/release.yml)
 
-Redis Watcher is a small, production-minded daemon that subscribes to a Redis
-server's `MONITOR` stream, parses every command it observes and forwards the
-result to **logs**, **Prometheus metrics**, and **alert channels** (Telegram,
-generic webhooks, Prometheus Pushgateway).
+Redis Watcher is a small, production-minded daemon that subscribes to a Redis server's `MONITOR` stream, parses every command it observes and forwards the result to **logs**, **Prometheus metrics**, and **alert channels** (Telegram, generic webhooks, Prometheus Pushgateway).
 
 > [!caution]
 > **Performance note** — `MONITOR` is expensive on busy Redis instances because the server has to serialize every command into ASCII for the watcher. Use Redis Watcher on a side replica or on hosts where the additional CPU cost is acceptable. See [Redis docs on MONITOR](https://redis.io/docs/latest/commands/monitor/).
@@ -96,9 +95,7 @@ generic webhooks, Prometheus Pushgateway).
 +---------------+        +-----------------+        +-----------------+
 ```
 
-Each sink runs in its own goroutine with a bounded buffered channel. When
-`pipeline.drop_on_full: true` (recommended), a slow downstream cannot back
-up the MONITOR consumer.
+Each sink runs in its own goroutine with a bounded buffered channel. When `pipeline.drop_on_full: true` (recommended), a slow downstream cannot back up the `MONITOR` consumer.
 
 ## Quick start
 
@@ -131,9 +128,7 @@ curl http://localhost:9100/metrics      # metrics
 docker logs -f rw-watcher               # process logs
 ```
 
-The compose stack starts a Redis instance with both a TCP port and a unix
-socket (shared via a named volume) so the watcher can connect over either
-transport.
+The compose stack starts a Redis instance with both a TCP port and a unix socket (shared via a named volume) so the watcher can connect over either transport.
 
 ## Configuration
 
@@ -143,8 +138,7 @@ Configuration is loaded in this order (later sources override earlier ones):
 2. YAML file passed via `--config` (or `REDIS_WATCHER_CONFIG`)
 3. Environment variables prefixed with `REDIS_WATCHER_`
 
-See [`config.example.yaml`](config.example.yaml) for an exhaustive,
-commented example.
+See [`config.example.yaml`](config.example.yaml) for an exhaustive, commented example.
 
 ### Useful environment variables
 
@@ -164,18 +158,12 @@ commented example.
 
 ## Sentinel-aware role detection
 
-In Redis Sentinel deployments the primary may move between hosts at any
-time. Running Redis Watcher on every node would duplicate audit trails
-across the fleet and trigger spurious alerts from the replication
-command stream itself. Also, the real source IP:PORT will be shown only when the instance is master
+In Redis Sentinel deployments the primary may move between hosts at any time. Running Redis Watcher on every node would duplicate audit trails across the fleet and trigger spurious alerts from the replication command stream itself. **Also, the real source IP:PORT will be shown only when the instance is master**.
 
-Redis Watcher therefore ships with a built-in role detector. It probes
-the upstream Redis with `INFO replication` every few seconds:
+Redis Watcher therefore ships with a built-in role detector. It probes the upstream Redis with `INFO replication` every few seconds:
 
 - While the instance is the **primary**, the pipeline runs normally.
-- When the instance becomes a **replica** (e.g. after a Sentinel failover)
-  the MONITOR connection is dropped immediately and outputs/metrics/alerts
-  pause until the role flips back.
+- When the instance becomes a **replica** (e.g. after a Sentinel failover) the `MONITOR` connection is dropped immediately and outputs/metrics/alerts pause until the role flips back.
 
 ```yaml
 role_check:
@@ -189,23 +177,16 @@ role_check:
 Observability:
 
 ```text
-redis_watcher_redis_is_master                       # gauge: 1=master, 0=replica
-redis_watcher_redis_role_info{role="master"}        # 1 for the currently observed role
-redis_watcher_redis_role_transitions_total{from,to} # counter of role flips
+redis_watcher_redis_is_master                        # gauge: 1=master, 0=replica
+redis_watcher_redis_role_info{role="master"}         # 1 for the currently observed role
+redis_watcher_redis_role_transitions_total{from,to}  # counter of role flips
 ```
 
-Deployment pattern: install Redis Watcher as a sidecar on **every** node
-that can become a primary (e.g. as a DaemonSet, or alongside each Redis
-unit in your service manager). With `role_check` enabled this is safe:
-only one Redis Watcher in the cluster will actively audit at any time,
-and the active one automatically follows the primary across failovers.
+Deployment pattern: install Redis Watcher as a sidecar on **every** node that can become a primary (e.g. as a DaemonSet, or alongside each Redis unit in your service manager). With `role_check` enabled this is safe: only one Redis Watcher in the cluster will actively audit at any time, and the active one automatically follows the primary across failovers.
 
 ## Filtering noisy commands
 
-Busy production hosts emit a lot of `PING`, `INFO`, `AUTH`, `SELECT`,
-`SUBSCRIBE` and similar housekeeping traffic that is almost never worth
-auditing. Use the top-level `filter` section to drop these commands as
-early as possible:
+Busy production hosts emit a lot of `PING`, `INFO`, `AUTH`, `SELECT`, `SUBSCRIBE` and similar housekeeping traffic that is almost never worth auditing. Use the top-level `filter` section to drop these commands as early as possible:
 
 ```yaml
 filter:
@@ -222,13 +203,9 @@ filter:
     - PUNSUBSCRIBE
 ```
 
-Matching is case-insensitive on the command name (the first token of the
-Redis command). Listing a parent command like `CLIENT` also silences every
-`CLIENT <subcommand>` invocation.
+Matching is case-insensitive on the command name (the first token of the Redis command). Listing a parent command like `CLIENT` also silences every `CLIENT <subcommand>` invocation.
 
-Filtered events do not reach outputs, metrics or alerts. They are counted
-separately in `redis_watcher_ignored_events_total{command="..."}` so you
-can still verify the filter is doing what you expect.
+Filtered events do not reach outputs, metrics or alerts. They are counted separately in `redis_watcher_ignored_events_total{command="..."}` so you can still verify the filter is doing what you expect.
 
 > [!note]
 > `filter.ignored_commands` is the right knob for silencing noise.
@@ -236,11 +213,7 @@ can still verify the filter is doing what you expect.
 
 ## Prometheus metrics
 
-All metrics are exposed at `/metrics` on the configured `metrics.address`
-(default `:9100`). The same handler also serves `go_*` (Go runtime) and
-`redis_watcher_process_*` (process collector, RSS / CPU / FDs) so a
-single scrape gives you a full health picture without a node-exporter
-sidecar.
+All metrics are exposed at `/metrics` on the configured `metrics.address` (default `:9100`). The same handler also serves `redis_watcher_process_*` (process collector, RSS / CPU / FDs) so a single scrape gives you a full health picture without a node-exporter sidecar.
 
 ### Health gauges (primary alert sources)
 
@@ -297,17 +270,13 @@ sidecar.
 
 ### Pipeline depth (back-pressure)
 
-`redis_watcher_queue_depth{queue}` and `redis_watcher_queue_capacity{queue}`
-are exposed by a custom collector that reads `len()` and `cap()` of each
-internal channel on every scrape. Queues:
+`redis_watcher_queue_depth{queue}` and `redis_watcher_queue_capacity{queue}` are exposed by a custom collector that reads `len()` and `cap()` of each internal channel on every scrape. Queues:
 
 - `events` — MONITOR → dispatcher
 - `output:<name>` — dispatcher → each output consumer
 - `alerts` — dispatcher → alert engine
 
-> The healthy pattern is `depth / capacity` staying close to 0. A sustained
-> ratio above ~0.5 means the consumer is too slow; >0.9 means drops are
-> imminent.
+> The healthy pattern is `depth / capacity` staying close to 0. A sustained ratio above ~0.5 means the consumer is too slow; >0.9 means drops are imminent.
 
 ### Process
 
@@ -319,17 +288,12 @@ The standard collectors are wired in:
 
 ### Health endpoints
 
-- `GET /healthz` — always 200 while the HTTP server is alive. Use as a
-  Kubernetes **liveness** probe (don't fail it on transient downstream
-  outages or you'll restart-loop yourself).
-- `GET /readyz` — returns 503 with a JSON body when any of the following
-  is true:
+- `GET /healthz` — always 200 while the HTTP server is alive. Use as a Kubernetes **liveness** probe (don't fail it on transient downstream outages or you'll restart-loop yourself).
+- `GET /readyz` — returns 503 with a JSON body when any of the following is true:
   - MONITOR is not currently connected,
   - the role checker has not yet determined the role,
   - any output is currently in a failing state,
-  - any alert channel is currently in a failing state.
-  Use as a Kubernetes **readiness** probe and as the gate for blue/green
-  promotions.
+  - any alert channel is currently in a failing state. Use as a Kubernetes **readiness** probe and as the gate for blue/green promotions.
 
 > [!warning]
 > If you operate Redis with many client IPs, set `metrics.track_source_ip: false` to keep per-command time series cardinality bounded.
@@ -338,32 +302,20 @@ The standard collectors are wired in:
 
 The alert engine matches each event against:
 
-1. **`alerts.suspicious_commands`** — exact command names (e.g. `FLUSHALL`,
-   `CONFIG`). For commands that route by subcommand (`CONFIG`, `CLIENT`,
-   `ACL`, `SCRIPT`, …) the watcher exposes the joined name (e.g.
-   `CONFIG SET`) as the alert title.
-2. **`alerts.patterns`** — case-insensitive regular expressions applied to
-   the reconstructed command line.
+1. **`alerts.suspicious_commands`** — exact command names (e.g. `FLUSHALL`, `CONFIG`). For commands that route by subcommand (`CONFIG`, `CLIENT`, `ACL`, `SCRIPT`, …) the watcher exposes the joined name (e.g. `CONFIG SET`) as the alert title.
+2. **`alerts.patterns`** — case-insensitive regular expressions applied to the reconstructed command line.
 
-Rate limiting is applied per `(command, source_ip)` tuple. When the rate is
-exceeded the event is recorded in metrics but not pushed downstream.
+Rate limiting is applied per `(command, source_ip)` tuple. When the rate is exceeded the event is recorded in metrics but not pushed downstream.
 
 ### Retry (`alerts.retry`)
 
-Each configured channel is invoked independently. On a failed `Send` the
-engine sleeps for `initial_backoff`, doubles on every subsequent failure
-(capped at `max_backoff`), and retries up to `max_attempts` times. The
-wait is context-aware, so shutdowns abort retries promptly.
+Each configured channel is invoked independently. On a failed `Send` the engine sleeps for `initial_backoff`, doubles on every subsequent failure (capped at `max_backoff`), and retries up to `max_attempts` times. The wait is context-aware, so shutdowns abort retries promptly.
 
 - `max_attempts` counts the initial try (`1` = no retries, `3` = initial
   - up to 2 retries). Defaults to `3`.
 - Initial / max backoff default to `500ms` / `5s`.
-- `redis_watcher_alert_send_errors_total` bumps once **per failed
-  attempt** so dashboards visibly react to retry storms.
-- Sentry only captures **after** all attempts for a channel are
-  exhausted — a single recovered hiccup does not page anyone. The
-  captured event's `attempts`/`max_attempts` context shows how persistent
-  the failure was.
+- `redis_watcher_alert_send_errors_total` bumps once **per failed attempt** so dashboards visibly react to retry storms.
+- Sentry only captures **after** all attempts for a channel are exhausted — a single recovered hiccup does not page anyone. The captured event's `attempts`/`max_attempts` context shows how persistent the failure was.
 
 Override via env (Go-duration strings for the backoffs):
 
@@ -375,33 +327,22 @@ REDIS_WATCHER_ALERTS_RETRY_MAX_BACKOFF=30s
 
 ## Production checklist
 
-- [ ] Run on a Redis **replica** (the primary should not pay the MONITOR
-      tax). Replicas still see every write because of replication.
-- [ ] Use `network: unix` when watching the local instance — no port, no
-      network round-trip, easier filesystem permissions.
+- [ ] Run on a Redis **replica** (the primary should not pay the MONITOR tax). Replicas still see every write because of replication.
+- [ ] Use `network: unix` when watching the local instance — no port, no network round-trip, easier filesystem permissions.
 - [ ] Set `metrics.track_source_ip: false` if clients use many IPs.
-- [ ] Keep `pipeline.drop_on_full: true`. Back-pressuring `MONITOR` causes
-      Redis to drop the watcher.
+- [ ] Keep `pipeline.drop_on_full: true`. Back-pressuring `MONITOR` causes Redis to drop the watcher.
 - [ ] Scrape `/metrics`. Suggested alerts:
       - `redis_watcher_monitor_connected == 0 for 1m` (ingest down)
-      - `time() - redis_watcher_last_event_timestamp_seconds > 60`
-        (ingest stalled even though we think we're connected)
+      - `time() - redis_watcher_last_event_timestamp_seconds > 60` (ingest stalled even though we think we're connected)
       - `max by (output) (redis_watcher_output_failing) == 1 for 5m`
       - `max by (channel) (redis_watcher_alert_channel_failing) == 1`
       - `rate(redis_watcher_dropped_events_total[5m]) > 0`
       - `rate(redis_watcher_monitor_dropped_events_total[5m]) > 0`
       - `histogram_quantile(0.99, rate(redis_watcher_alert_send_duration_seconds_bucket[5m])) > 2`
       - `rate(redis_watcher_suspicious_commands_total[5m]) > 0`
-- [ ] Use `/readyz` (not `/healthz`) as the readiness probe in
-      Kubernetes / blue-green deployers.
-- [ ] Configure Sentry. Errors are captured automatically for every
-      subsystem (monitor connection, role probes, alert sends, output
-      writes, /metrics handlers). For performance tracing set
-      `sentry.traces_sample_rate` to a small value (0.01–0.05 is plenty);
-      transactions named `alert.dispatch`, `role.probe`, and `http.server`
-      surface latency for the operationally interesting paths.
-- [ ] Make sure the unix socket has restricted permissions
-      (`unixsocketperm 770` in `redis.conf`).
+- [ ] Use `/readyz` (not `/healthz`) as the readiness probe in Kubernetes / blue-green deployers.
+- [ ] Configure Sentry. Errors are captured automatically for every subsystem (monitor connection, role probes, alert sends, output writes, /metrics handlers). For performance tracing set `sentry.traces_sample_rate` to a small value (0.01–0.05 is plenty); transactions named `alert.dispatch`, `role.probe`, and `http.server` surface latency for the operationally interesting paths.
+- [ ] Make sure the unix socket has restricted permissions (`unixsocketperm 770` in `redis.conf`).
 
 ## Development
 

@@ -1,7 +1,9 @@
 {
   "cSpell.words": [
     "appendonly",
+    "backoffs",
     "backpressure",
+    "deployers",
     "distroless",
     "failovers",
     "FLUSHALL",
