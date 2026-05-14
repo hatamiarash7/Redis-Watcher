@@ -236,6 +236,202 @@ func (c *countingReporter) AlertSent(string, string)          { c.sent.Add(1) }
 func (c *countingReporter) AlertError(string, error)          { c.errors.Add(1) }
 func (c *countingReporter) SuspiciousObserved(string, string) { c.suspicious.Add(1) }
 
+// scriptedChannel returns the i-th error from a script for the i-th Send
+// call. A nil entry counts as success. Excess calls return success too.
+type scriptedChannel struct {
+	mu     sync.Mutex
+	name   string
+	script []error
+	idx    int
+	calls  atomic.Int64
+}
+
+func (s *scriptedChannel) Name() string { return s.name }
+func (s *scriptedChannel) Send(_ context.Context, _ Alert) error {
+	s.calls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx >= len(s.script) {
+		return nil
+	}
+	err := s.script[s.idx]
+	s.idx++
+	return err
+}
+func (*scriptedChannel) Close() error { return nil }
+
+func TestEngineRetriesUntilSuccess(t *testing.T) {
+	ch := &scriptedChannel{
+		name:   "telegram",
+		script: []error{errors.New("503"), errors.New("503"), nil},
+	}
+	rep := &countingReporter{}
+	e, err := New(Options{
+		Channels:            []Channel{ch},
+		Commands:            []string{"FLUSHALL"},
+		BufferSize:          4,
+		SendTimeout:         time.Second,
+		RetryMaxAttempts:    3,
+		RetryInitialBackoff: 5 * time.Millisecond,
+		RetryMaxBackoff:     20 * time.Millisecond,
+		Reporter:            rep,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = e.Run(ctx) }()
+
+	e.Submit(newEvent("FLUSHALL", "", nil, "10.0.0.1"))
+
+	waitFor(t, func() bool { return rep.sent.Load() == 1 }, time.Second)
+	if ch.calls.Load() != 3 {
+		t.Errorf("expected 3 channel calls, got %d", ch.calls.Load())
+	}
+	// First two attempts are failed → 2 error increments.
+	if rep.errors.Load() != 2 {
+		t.Errorf("expected 2 error increments (one per retry), got %d", rep.errors.Load())
+	}
+}
+
+func TestEngineRetriesExhausted(t *testing.T) {
+	ch := &scriptedChannel{
+		name:   "telegram",
+		script: []error{errors.New("503"), errors.New("503"), errors.New("503")},
+	}
+	rep := &countingReporter{}
+	rec := sentryxtest.Swap(t, false)
+	e, err := New(Options{
+		Channels:            []Channel{ch},
+		Commands:            []string{"FLUSHALL"},
+		BufferSize:          4,
+		SendTimeout:         time.Second,
+		RetryMaxAttempts:    3,
+		RetryInitialBackoff: 5 * time.Millisecond,
+		RetryMaxBackoff:     20 * time.Millisecond,
+		Reporter:            rep,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = e.Run(ctx) }()
+
+	e.Submit(newEvent("FLUSHALL", "", nil, "10.0.0.2"))
+
+	waitFor(t, func() bool { return rep.errors.Load() == 3 }, time.Second)
+	if rep.sent.Load() != 0 {
+		t.Errorf("no success expected, sent=%d", rep.sent.Load())
+	}
+	if ch.calls.Load() != 3 {
+		t.Errorf("expected 3 attempts, got %d", ch.calls.Load())
+	}
+
+	// Sentry should see exactly one captured exception for the channel
+	// (not one per attempt) — and it carries the attempts count.
+	if !rec.WaitFor(time.Second, func(ev sentryxtest.CapturedEvent) bool {
+		if len(ev.Exceptions) == 0 {
+			return false
+		}
+		return ev.Details["channel"] == "telegram" &&
+			ev.Details["attempts"] == 3 &&
+			ev.Details["max_attempts"] == 3
+	}) {
+		t.Fatalf("expected one final Sentry capture with attempts=3; got %+v", rec.Events())
+	}
+}
+
+func TestEngineNoRetryWhenDisabled(t *testing.T) {
+	ch := &scriptedChannel{
+		name:   "telegram",
+		script: []error{errors.New("boom"), nil}, // would succeed on retry
+	}
+	rep := &countingReporter{}
+	e, err := New(Options{
+		Channels:         []Channel{ch},
+		Commands:         []string{"FLUSHALL"},
+		BufferSize:       4,
+		SendTimeout:      time.Second,
+		RetryMaxAttempts: 1, // explicit "no retries"
+		Reporter:         rep,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = e.Run(ctx) }()
+
+	e.Submit(newEvent("FLUSHALL", "", nil, "10.0.0.3"))
+	waitFor(t, func() bool { return rep.errors.Load() == 1 }, time.Second)
+	if ch.calls.Load() != 1 {
+		t.Errorf("expected exactly 1 call with retries disabled, got %d", ch.calls.Load())
+	}
+}
+
+func TestEngineRetryAbortsOnShutdown(t *testing.T) {
+	// Long backoff plus a small Send timeout ensures we are sleeping when
+	// the context cancels. The retry loop must drop back to the dispatcher
+	// promptly instead of waiting out the full backoff.
+	ch := &scriptedChannel{
+		name:   "telegram",
+		script: []error{errors.New("503"), errors.New("503"), errors.New("503")},
+	}
+	e, err := New(Options{
+		Channels:            []Channel{ch},
+		Commands:            []string{"FLUSHALL"},
+		BufferSize:          4,
+		SendTimeout:         50 * time.Millisecond,
+		RetryMaxAttempts:    5,
+		RetryInitialBackoff: 5 * time.Second,
+		RetryMaxBackoff:     10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = e.Run(ctx) }()
+
+	e.Submit(newEvent("FLUSHALL", "", nil, "10.0.0.4"))
+	// Wait for the first attempt to fail, then cancel.
+	waitFor(t, func() bool { return ch.calls.Load() >= 1 }, time.Second)
+	start := time.Now()
+	cancel()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		// After cancellation no further calls should happen.
+		time.Sleep(20 * time.Millisecond)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("retry loop did not bail promptly on shutdown (elapsed %s)", elapsed)
+	}
+	if ch.calls.Load() > 2 {
+		t.Errorf("expected retry loop to stop after cancel, observed %d calls", ch.calls.Load())
+	}
+}
+
+func TestNextBackoff(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		cur, maxBackoff, want time.Duration
+	}{
+		{100 * time.Millisecond, time.Second, 200 * time.Millisecond},
+		{800 * time.Millisecond, time.Second, time.Second}, // capped
+		{2 * time.Second, time.Second, time.Second},        // already over cap
+		{100 * time.Millisecond, 0, 200 * time.Millisecond},
+		{40 * time.Second, 0, time.Minute}, // safety cap when max=0
+	}
+	for _, c := range cases {
+		got := nextBackoff(c.cur, c.maxBackoff)
+		if got != c.want {
+			t.Errorf("nextBackoff(%s, %s) = %s, want %s", c.cur, c.maxBackoff, got, c.want)
+		}
+	}
+}
+
 func TestWebhookChannel(t *testing.T) {
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

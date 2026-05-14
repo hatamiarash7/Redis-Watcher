@@ -122,6 +122,7 @@ type AlertsConfig struct {
 	Patterns           []string          `yaml:"patterns"`
 	IgnoredSourceIPs   []string          `yaml:"ignored_source_ips"`
 	RateLimit          RateLimitConfig   `yaml:"rate_limit"`
+	Retry              RetryConfig       `yaml:"retry"`
 	Telegram           TelegramConfig    `yaml:"telegram"`
 	Webhook            WebhookConfig     `yaml:"webhook"`
 	Pushgateway        PushgatewayConfig `yaml:"pushgateway"`
@@ -132,6 +133,40 @@ type RateLimitConfig struct {
 	Enabled   bool          `yaml:"enabled"`
 	Window    time.Duration `yaml:"window"`
 	MaxAlerts int           `yaml:"max_alerts"`
+}
+
+// RetryConfig controls per-channel retry behaviour. Retries are applied
+// independently to every channel (Telegram, Webhook, Pushgateway) so that
+// a transient failure on one does not prevent delivery to the others.
+//
+// MaxAttempts counts the initial try, so MaxAttempts=1 means "no retries"
+// and MaxAttempts=3 means "send once + up to two retries on failure".
+//
+// Between attempts the engine sleeps for InitialBackoff and doubles on
+// every failure, capped at MaxBackoff. The retry loop respects the
+// engine's context, so a shutdown immediately aborts any in-flight wait.
+type RetryConfig struct {
+	MaxAttempts    int           `yaml:"max_attempts"`
+	InitialBackoff time.Duration `yaml:"initial_backoff"`
+	MaxBackoff     time.Duration `yaml:"max_backoff"`
+}
+
+// validate enforces RetryConfig invariants and normalises non-fatal
+// nonsense (e.g. MaxAttempts<=0 → 1).
+func (r *RetryConfig) validate() error {
+	if r.MaxAttempts <= 0 {
+		r.MaxAttempts = 1
+	}
+	if r.InitialBackoff < 0 {
+		return errors.New("alerts.retry.initial_backoff must be >= 0")
+	}
+	if r.MaxBackoff < 0 {
+		return errors.New("alerts.retry.max_backoff must be >= 0")
+	}
+	if r.MaxBackoff > 0 && r.InitialBackoff > r.MaxBackoff {
+		return errors.New("alerts.retry.initial_backoff must be <= alerts.retry.max_backoff")
+	}
+	return nil
 }
 
 // TelegramConfig configures Telegram bot notifications.
@@ -267,6 +302,11 @@ func Default() *Config {
 				Window:    60 * time.Second,
 				MaxAlerts: 5,
 			},
+			Retry: RetryConfig{
+				MaxAttempts:    3,
+				InitialBackoff: 500 * time.Millisecond,
+				MaxBackoff:     5 * time.Second,
+			},
 		},
 		Sentry: SentryConfig{
 			Enabled:          false,
@@ -371,6 +411,9 @@ func (c *Config) Validate() error {
 		if c.Alerts.Webhook.Enabled && c.Alerts.Webhook.Method == "" {
 			c.Alerts.Webhook.Method = "POST"
 		}
+		if err := c.Alerts.Retry.validate(); err != nil {
+			return err
+		}
 	}
 
 	if c.Sentry.Enabled && c.Sentry.DSN == "" {
@@ -421,6 +464,9 @@ func (c *Config) Validate() error {
 //	REDIS_WATCHER_ALERTS_PUSHGATEWAY_URLS      (comma-separated)
 //	REDIS_WATCHER_ALERTS_PUSHGATEWAY_USERNAME
 //	REDIS_WATCHER_ALERTS_PUSHGATEWAY_PASSWORD
+//	REDIS_WATCHER_ALERTS_RETRY_MAX_ATTEMPTS
+//	REDIS_WATCHER_ALERTS_RETRY_INITIAL_BACKOFF    (Go duration, e.g. "500ms")
+//	REDIS_WATCHER_ALERTS_RETRY_MAX_BACKOFF        (Go duration, e.g. "5s")
 func applyEnv(c *Config) {
 	str := func(key string, dst *string) {
 		if v, ok := os.LookupEnv(envPrefix + key); ok {
@@ -453,6 +499,13 @@ func applyEnv(c *Config) {
 			*dst = out
 		}
 	}
+	durVar := func(key string, dst *time.Duration) {
+		if v, ok := os.LookupEnv(envPrefix + key); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				*dst = d
+			}
+		}
+	}
 
 	str("REDIS_NETWORK", &c.Redis.Network)
 	str("REDIS_ADDRESS", &c.Redis.Address)
@@ -473,4 +526,7 @@ func applyEnv(c *Config) {
 	sliceVar("ALERTS_PUSHGATEWAY_URLS", &c.Alerts.Pushgateway.URLs)
 	str("ALERTS_PUSHGATEWAY_USERNAME", &c.Alerts.Pushgateway.Username)
 	str("ALERTS_PUSHGATEWAY_PASSWORD", &c.Alerts.Pushgateway.Password)
+	intVar("ALERTS_RETRY_MAX_ATTEMPTS", &c.Alerts.Retry.MaxAttempts)
+	durVar("ALERTS_RETRY_INITIAL_BACKOFF", &c.Alerts.Retry.InitialBackoff)
+	durVar("ALERTS_RETRY_MAX_BACKOFF", &c.Alerts.Retry.MaxBackoff)
 }

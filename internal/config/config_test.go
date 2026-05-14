@@ -111,6 +111,60 @@ func TestValidateRejectsUnknownOutput(t *testing.T) {
 	}
 }
 
+func TestDefaultRetryConfig(t *testing.T) {
+	c := Default()
+	if c.Alerts.Retry.MaxAttempts != 3 {
+		t.Errorf("expected default max_attempts=3, got %d", c.Alerts.Retry.MaxAttempts)
+	}
+	if c.Alerts.Retry.InitialBackoff != 500*time.Millisecond {
+		t.Errorf("expected default initial_backoff=500ms, got %s", c.Alerts.Retry.InitialBackoff)
+	}
+	if c.Alerts.Retry.MaxBackoff != 5*time.Second {
+		t.Errorf("expected default max_backoff=5s, got %s", c.Alerts.Retry.MaxBackoff)
+	}
+}
+
+func TestValidateRetryAdjustsMaxAttempts(t *testing.T) {
+	c := Default()
+	c.Alerts.Enabled = true
+	c.Alerts.Retry.MaxAttempts = 0
+	if err := c.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if c.Alerts.Retry.MaxAttempts != 1 {
+		t.Errorf("expected max_attempts to be normalized to 1, got %d", c.Alerts.Retry.MaxAttempts)
+	}
+}
+
+func TestValidateRetryRejectsBadBackoff(t *testing.T) {
+	c := Default()
+	c.Alerts.Enabled = true
+	c.Alerts.Retry.InitialBackoff = 10 * time.Second
+	c.Alerts.Retry.MaxBackoff = time.Second
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error when initial_backoff > max_backoff")
+	}
+}
+
+func TestEnvOverridesRetry(t *testing.T) {
+	t.Setenv("REDIS_WATCHER_ALERTS_RETRY_MAX_ATTEMPTS", "7")
+	t.Setenv("REDIS_WATCHER_ALERTS_RETRY_INITIAL_BACKOFF", "250ms")
+	t.Setenv("REDIS_WATCHER_ALERTS_RETRY_MAX_BACKOFF", "30s")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Alerts.Retry.MaxAttempts != 7 {
+		t.Errorf("max_attempts: %d", cfg.Alerts.Retry.MaxAttempts)
+	}
+	if cfg.Alerts.Retry.InitialBackoff != 250*time.Millisecond {
+		t.Errorf("initial_backoff: %s", cfg.Alerts.Retry.InitialBackoff)
+	}
+	if cfg.Alerts.Retry.MaxBackoff != 30*time.Second {
+		t.Errorf("max_backoff: %s", cfg.Alerts.Retry.MaxBackoff)
+	}
+}
+
 func TestEnvOverridesApplied(t *testing.T) {
 	t.Setenv("REDIS_WATCHER_REDIS_ADDRESS", "/tmp/foo.sock")
 	t.Setenv("REDIS_WATCHER_LOG_LEVEL", "warn")

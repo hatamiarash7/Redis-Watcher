@@ -164,6 +164,26 @@ alerts:
     window: 60s
     max_alerts: 5
 
+  # Per-channel retry on transient failures.
+  #
+  # Every configured channel (telegram / webhook / pushgateway) is invoked
+  # independently. If a channel returns an error the watcher waits
+  # `initial_backoff` and tries again, doubling the wait on each subsequent
+  # failure until `max_backoff` is reached.
+  #
+  # `max_attempts` counts the initial try, so:
+  #   - max_attempts: 1 => no retries
+  #   - max_attempts: 3 => initial send + up to 2 retries
+  #
+  # Sentry is notified only after all attempts for a channel have failed,
+  # so a single recovered hiccup does not page anyone. Prometheus metrics
+  # (alert_send_errors_total) bump once per failed attempt so dashboards
+  # still light up on retry storms.
+  retry:
+    max_attempts: 3
+    initial_backoff: 500ms
+    max_backoff: 5s
+
   # Notification channels
   telegram:
     enabled: false

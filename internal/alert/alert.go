@@ -71,6 +71,10 @@ type Engine struct {
 	rateWindow    time.Duration
 	rateMaxAlerts int
 
+	retryMax            int
+	retryInitialBackoff time.Duration
+	retryMaxBackoff     time.Duration
+
 	mu    sync.Mutex
 	rates map[string]*bucket
 
@@ -98,6 +102,16 @@ type Options struct {
 	RateWindow       time.Duration
 	RateMaxAlerts    int
 
+	// RetryMaxAttempts is the total number of times each channel will be
+	// invoked before a single alert is declared failed. 1 disables retries.
+	RetryMaxAttempts int
+	// RetryInitialBackoff is the sleep between the first failure and the
+	// second attempt. Each subsequent failure doubles this delay until
+	// RetryMaxBackoff is reached. Zero disables sleeping between attempts.
+	RetryInitialBackoff time.Duration
+	// RetryMaxBackoff caps the exponential backoff.
+	RetryMaxBackoff time.Duration
+
 	BufferSize  int
 	DropOnFull  bool
 	SendTimeout time.Duration
@@ -116,6 +130,15 @@ func New(o Options) (*Engine, error) {
 	}
 	if o.SendTimeout <= 0 {
 		o.SendTimeout = 10 * time.Second
+	}
+	if o.RetryMaxAttempts <= 0 {
+		o.RetryMaxAttempts = 1
+	}
+	if o.RetryInitialBackoff < 0 {
+		o.RetryInitialBackoff = 0
+	}
+	if o.RetryMaxBackoff > 0 && o.RetryInitialBackoff > o.RetryMaxBackoff {
+		o.RetryInitialBackoff = o.RetryMaxBackoff
 	}
 
 	cmds := make(map[string]struct{}, len(o.Commands))
@@ -136,19 +159,22 @@ func New(o Options) (*Engine, error) {
 	}
 
 	return &Engine{
-		channels:      o.Channels,
-		commands:      cmds,
-		patterns:      regexps,
-		ignoredIPs:    ips,
-		rateLimit:     o.RateLimitEnabled,
-		rateWindow:    o.RateWindow,
-		rateMaxAlerts: o.RateMaxAlerts,
-		rates:         make(map[string]*bucket),
-		in:            make(chan *event.Event, o.BufferSize),
-		log:           o.Log,
-		rep:           o.Reporter,
-		timeout:       o.SendTimeout,
-		drop:          o.DropOnFull,
+		channels:            o.Channels,
+		commands:            cmds,
+		patterns:            regexps,
+		ignoredIPs:          ips,
+		rateLimit:           o.RateLimitEnabled,
+		rateWindow:          o.RateWindow,
+		rateMaxAlerts:       o.RateMaxAlerts,
+		retryMax:            o.RetryMaxAttempts,
+		retryInitialBackoff: o.RetryInitialBackoff,
+		retryMaxBackoff:     o.RetryMaxBackoff,
+		rates:               make(map[string]*bucket),
+		in:                  make(chan *event.Event, o.BufferSize),
+		log:                 o.Log,
+		rep:                 o.Reporter,
+		timeout:             o.SendTimeout,
+		drop:                o.DropOnFull,
 	}, nil
 }
 
@@ -220,38 +246,119 @@ func (e *Engine) handle(ctx context.Context, ev *event.Event) {
 	finishTx(dispatchErr)
 }
 
-// sendOne dispatches a single alert to ch, traces it as a child span and
-// reports failures through both the metrics reporter and Sentry. The
-// returned error is the original ch.Send error (or nil) for the caller's
-// aggregation purposes.
+// sendOne dispatches a single alert to ch with bounded retries and
+// exponential backoff. Each attempt is bounded by the per-attempt send
+// timeout; the entire retry chain is bounded by ctx.
+//
+// Metrics semantics:
+//   - AlertError fires per failed attempt (so dashboards see retry noise).
+//   - AlertSent fires once on eventual success.
+//
+// Sentry semantics:
+//   - The whole channel dispatch is one child span under alert.dispatch;
+//     span data carries the total attempt count and final outcome.
+//   - sentryx.Capture is invoked only after all retries are exhausted, so
+//     a single transient failure that recovers does not page anyone.
+//
+// The returned error is the final attempt's error (nil on eventual
+// success). It is used by the caller to set the parent transaction's
+// status.
 func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Event) error {
 	spanCtx, finish := sentryx.StartSpan(ctx, "http.client", "alert.send."+ch.Name())
 	sentryx.SetSpanTag(spanCtx, "channel", ch.Name())
 	sentryx.SetSpanTag(spanCtx, "command", ev.Command)
 
-	sendCtx, cancel := context.WithTimeout(spanCtx, e.timeout)
-	err := ch.Send(sendCtx, a)
-	cancel()
-	finish(err)
+	backoff := e.retryInitialBackoff
+	var lastErr error
+	attempts := 0
+	for attempt := 1; attempt <= e.retryMax; attempt++ {
+		attempts = attempt
+		sendCtx, cancel := context.WithTimeout(spanCtx, e.timeout)
+		err := ch.Send(sendCtx, a)
+		cancel()
 
-	if err != nil {
-		e.log.Error("alert send failed", "channel", ch.Name(), "err", err)
-		sentryx.Capture(spanCtx, err,
-			"channel", ch.Name(),
-			"command", ev.FullCommand(),
-			"source_ip", ev.Source.IP,
-			"db", ev.DB,
-			"reason", a.Reason,
-		)
+		if err == nil {
+			sentryx.SetSpanData(spanCtx, "attempts", attempt)
+			finish(nil)
+			if e.rep != nil {
+				e.rep.AlertSent(ch.Name(), ev.Command)
+			}
+			if attempt > 1 {
+				e.log.Info("alert recovered after retry",
+					"channel", ch.Name(),
+					"command", ev.Command,
+					"attempts", attempt)
+			}
+			return nil
+		}
+
+		lastErr = err
 		if e.rep != nil {
 			e.rep.AlertError(ch.Name(), err)
 		}
-		return err
+		e.log.Warn("alert send attempt failed",
+			"channel", ch.Name(),
+			"attempt", attempt,
+			"max_attempts", e.retryMax,
+			"err", err)
+
+		if attempt == e.retryMax {
+			break
+		}
+		if !sleepWithContext(ctx, backoff) {
+			lastErr = fmt.Errorf("retry aborted: %w", ctx.Err())
+			break
+		}
+		backoff = nextBackoff(backoff, e.retryMaxBackoff)
 	}
-	if e.rep != nil {
-		e.rep.AlertSent(ch.Name(), ev.Command)
+
+	sentryx.SetSpanData(spanCtx, "attempts", attempts)
+	finish(lastErr)
+	e.log.Error("alert send failed",
+		"channel", ch.Name(),
+		"attempts", attempts,
+		"err", lastErr)
+	sentryx.Capture(spanCtx, lastErr,
+		"channel", ch.Name(),
+		"attempts", attempts,
+		"max_attempts", e.retryMax,
+		"command", ev.FullCommand(),
+		"source_ip", ev.Source.IP,
+		"db", ev.DB,
+		"reason", a.Reason,
+	)
+	return lastErr
+}
+
+// sleepWithContext sleeps for d unless ctx fires first. Returns false if
+// the context was cancelled (the caller should bail out of the retry
+// loop), true otherwise.
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
 	}
-	return nil
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// nextBackoff doubles cur, capping it at maxBackoff. A zero maxBackoff
+// means "unbounded"; we still cap at one minute to keep total dispatch
+// time finite even when the config is misset.
+func nextBackoff(cur, maxBackoff time.Duration) time.Duration {
+	next := cur * 2
+	if maxBackoff > 0 && next > maxBackoff {
+		return maxBackoff
+	}
+	if maxBackoff == 0 && next > time.Minute {
+		return time.Minute
+	}
+	return next
 }
 
 func (e *Engine) match(ev *event.Event) (string, bool) {

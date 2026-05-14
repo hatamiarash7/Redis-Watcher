@@ -338,17 +338,20 @@ func buildAlertEngine(cfg *config.Config, reg *metrics.Registry, log *slog.Logge
 		return nil, nil
 	}
 	return alert.New(alert.Options{
-		Channels:         channels,
-		Commands:         cfg.Alerts.SuspiciousCommands,
-		Patterns:         cfg.Alerts.Patterns,
-		IgnoredSourceIPs: cfg.Alerts.IgnoredSourceIPs,
-		RateLimitEnabled: cfg.Alerts.RateLimit.Enabled,
-		RateWindow:       cfg.Alerts.RateLimit.Window,
-		RateMaxAlerts:    cfg.Alerts.RateLimit.MaxAlerts,
-		BufferSize:       cfg.Pipeline.ConsumerBuffer,
-		DropOnFull:       cfg.Pipeline.DropOnFull,
-		Log:              log,
-		Reporter:         metricsReporter{reg: reg},
+		Channels:            channels,
+		Commands:            cfg.Alerts.SuspiciousCommands,
+		Patterns:            cfg.Alerts.Patterns,
+		IgnoredSourceIPs:    cfg.Alerts.IgnoredSourceIPs,
+		RateLimitEnabled:    cfg.Alerts.RateLimit.Enabled,
+		RateWindow:          cfg.Alerts.RateLimit.Window,
+		RateMaxAlerts:       cfg.Alerts.RateLimit.MaxAlerts,
+		RetryMaxAttempts:    cfg.Alerts.Retry.MaxAttempts,
+		RetryInitialBackoff: cfg.Alerts.Retry.InitialBackoff,
+		RetryMaxBackoff:     cfg.Alerts.Retry.MaxBackoff,
+		BufferSize:          cfg.Pipeline.ConsumerBuffer,
+		DropOnFull:          cfg.Pipeline.DropOnFull,
+		Log:                 log,
+		Reporter:            metricsReporter{reg: reg},
 	})
 }
 

@@ -24,7 +24,8 @@ generic webhooks, Prometheus Pushgateway).
 - **Prometheus metrics** (commands, per-IP, per-DB, alerts, drops, reconnects)
 - **Alerts** on suspicious commands (`FLUSH*`, `CONFIG`, `ACL`, `KEYS`,
   `EVAL`, `SCRIPT`, `SHUTDOWN`, `DEBUG`, …) with per-(command, IP) rate
-  limiting; delivered via Telegram, webhook, or Pushgateway
+  limiting and **per-channel retry with exponential backoff** (configurable
+  via `alerts.retry`); delivered via Telegram, webhook, or Pushgateway
 - **Sentry** integration for runtime error visibility — all subsystem
   failures (alert send failures, MONITOR disconnects, role-probe failures,
   output write failures, parse errors, panics on the metrics server) are
@@ -232,6 +233,31 @@ The alert engine matches each event against:
 
 Rate limiting is applied per `(command, source_ip)` tuple. When the rate is
 exceeded the event is recorded in metrics but not pushed downstream.
+
+### Retry (`alerts.retry`)
+
+Each configured channel is invoked independently. On a failed `Send` the
+engine sleeps for `initial_backoff`, doubles on every subsequent failure
+(capped at `max_backoff`), and retries up to `max_attempts` times. The
+wait is context-aware, so shutdowns abort retries promptly.
+
+- `max_attempts` counts the initial try (`1` = no retries, `3` = initial
+  + up to 2 retries). Defaults to `3`.
+- Initial / max backoff default to `500ms` / `5s`.
+- `redis_watcher_alert_send_errors_total` bumps once **per failed
+  attempt** so dashboards visibly react to retry storms.
+- Sentry only captures **after** all attempts for a channel are
+  exhausted — a single recovered hiccup does not page anyone. The
+  captured event's `attempts`/`max_attempts` context shows how persistent
+  the failure was.
+
+Override via env (Go-duration strings for the backoffs):
+
+```bash
+REDIS_WATCHER_ALERTS_RETRY_MAX_ATTEMPTS=5
+REDIS_WATCHER_ALERTS_RETRY_INITIAL_BACKOFF=250ms
+REDIS_WATCHER_ALERTS_RETRY_MAX_BACKOFF=30s
+```
 
 ## Production checklist
 
