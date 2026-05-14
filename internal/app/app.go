@@ -86,24 +86,13 @@ func Run(ctx context.Context, configPath string, info BuildInfo) error {
 		BackoffMin:  cfg.Redis.BackoffMin,
 		BackoffMax:  cfg.Redis.BackoffMax,
 	}, events, log, report, cfg.Pipeline.DropOnFull)
+	mon.SetMetricsSink(reg)
 
-	var roleChecker *role.Checker
-	if cfg.RoleCheck.Enabled {
-		roleChecker = role.New(role.Options{
-			Network:      cfg.Redis.Network,
-			Address:      cfg.Redis.Address,
-			Username:     cfg.Redis.Username,
-			Password:     cfg.Redis.Password,
-			DialTimeout:  cfg.RoleCheck.DialTimeout,
-			ReadTimeout:  cfg.RoleCheck.ReadTimeout,
-			Interval:     cfg.RoleCheck.Interval,
-			AllowReplica: cfg.RoleCheck.AllowReplica,
-		}, log.With("component", "role"), reg)
-		mon.SetGate(roleChecker)
-		if cfg.RoleCheck.AllowReplica {
-			log.Warn("role_check.allow_replica is true: watcher will run regardless of replication role")
-		}
+	if err := wireMetrics(reg, mon, outMgr, alertEngine); err != nil {
+		return err
 	}
+
+	roleChecker := buildRoleChecker(cfg, reg, mon, log)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -288,20 +277,6 @@ func buildOutputs(cfg *config.Config, log *slog.Logger) (*output.Manager, error)
 	return mgr, nil
 }
 
-type metricsReporter struct {
-	reg *metrics.Registry
-}
-
-func (m metricsReporter) AlertSent(channel, command string) {
-	m.reg.AlertsSentTotal.WithLabelValues(channel, command).Inc()
-}
-func (m metricsReporter) AlertError(channel string, _ error) {
-	m.reg.AlertSendErrors.WithLabelValues(channel).Inc()
-}
-func (m metricsReporter) SuspiciousObserved(command, sourceIP string) {
-	m.reg.RecordSuspicious(command, sourceIP)
-}
-
 func buildAlertEngine(cfg *config.Config, reg *metrics.Registry, log *slog.Logger) (*alert.Engine, error) {
 	if !cfg.Alerts.Enabled {
 		return nil, nil
@@ -351,8 +326,64 @@ func buildAlertEngine(cfg *config.Config, reg *metrics.Registry, log *slog.Logge
 		BufferSize:          cfg.Pipeline.ConsumerBuffer,
 		DropOnFull:          cfg.Pipeline.DropOnFull,
 		Log:                 log,
-		Reporter:            metricsReporter{reg: reg},
+		Reporter:            reg,
 	})
+}
+
+// buildRoleChecker constructs and wires the optional Sentinel-aware
+// role checker. It returns nil when role_check is disabled.
+func buildRoleChecker(cfg *config.Config, reg *metrics.Registry, mon *monitor.Client, log *slog.Logger) *role.Checker {
+	if !cfg.RoleCheck.Enabled {
+		return nil
+	}
+	rc := role.New(role.Options{
+		Network:      cfg.Redis.Network,
+		Address:      cfg.Redis.Address,
+		Username:     cfg.Redis.Username,
+		Password:     cfg.Redis.Password,
+		DialTimeout:  cfg.RoleCheck.DialTimeout,
+		ReadTimeout:  cfg.RoleCheck.ReadTimeout,
+		Interval:     cfg.RoleCheck.Interval,
+		AllowReplica: cfg.RoleCheck.AllowReplica,
+	}, log.With("component", "role"), reg)
+	mon.SetGate(rc)
+	if cfg.RoleCheck.AllowReplica {
+		log.Warn("role_check.allow_replica is true: watcher will run regardless of replication role")
+	}
+	return rc
+}
+
+// wireMetrics plumbs the metrics.Registry into every component that
+// accepts a sink and registers the pipeline-depth collector. Splitting
+// this out keeps Run's cyclomatic complexity manageable as we extend the
+// instrumentation surface.
+func wireMetrics(reg *metrics.Registry, mon *monitor.Client, outMgr *output.Manager, alertEngine *alert.Engine) error {
+	if outMgr != nil {
+		for _, c := range outMgr.Consumers() {
+			c.SetMetricsSink(reg)
+		}
+	}
+
+	// Pipeline-depth collector. Exposes
+	//   redis_watcher_queue_depth{queue=...}
+	//   redis_watcher_queue_capacity{queue=...}
+	// covering the events channel, every output consumer and the alert
+	// engine. Watching depth/capacity ratios is the canonical way to
+	// detect back-pressure before drops start happening.
+	queueDepths := metrics.NewQueueDepthCollector()
+	queueDepths.Add("events", mon.QueueDepth, mon.QueueCapacity())
+	if outMgr != nil {
+		for _, c := range outMgr.Consumers() {
+			queueDepths.Add("output:"+c.Name(), c.QueueDepth, c.QueueCapacity())
+		}
+	}
+	if alertEngine != nil {
+		queueDepths.Add("alerts", alertEngine.QueueDepth, alertEngine.QueueCapacity())
+	}
+	if err := reg.RegisterCollector(queueDepths); err != nil {
+		return fmt.Errorf("register queue depth collector: %w", err)
+	}
+	return nil
 }
 
 func installSignalHandlers(_ context.Context, cancel context.CancelFunc, log *slog.Logger) {

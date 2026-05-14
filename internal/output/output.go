@@ -17,6 +17,26 @@ import (
 	"github.com/hatamiarash7/redis-watcher/internal/sentryx"
 )
 
+// MetricsSink is implemented by metrics.Registry. Consumers publish
+// per-output written / dropped / errors / write-duration / failing state
+// through it. A nil sink is replaced with a no-op at construction so the
+// hot path can call into it unconditionally.
+type MetricsSink interface {
+	IncrOutputWritten(output string)
+	IncrOutputDropped(output string)
+	IncrOutputError(output string)
+	SetOutputFailing(output string, failing bool)
+	ObserveOutputWrite(output string, d time.Duration)
+}
+
+type noopSink struct{}
+
+func (noopSink) IncrOutputWritten(string)                 {}
+func (noopSink) IncrOutputDropped(string)                 {}
+func (noopSink) IncrOutputError(string)                   {}
+func (noopSink) SetOutputFailing(string, bool)            {}
+func (noopSink) ObserveOutputWrite(string, time.Duration) {}
+
 // Sink is the writer interface implemented by every output backend.
 type Sink interface {
 	// Name returns a stable identifier used for logging and metrics.
@@ -43,6 +63,7 @@ type Consumer struct {
 	failing atomic.Bool
 	drop    bool
 	log     *slog.Logger
+	metrics MetricsSink
 }
 
 // NewConsumer builds a Consumer with the given buffer size and drop policy.
@@ -51,12 +72,30 @@ func NewConsumer(sink Sink, buffer int, dropOnFull bool, log *slog.Logger) *Cons
 		log = slog.Default()
 	}
 	return &Consumer{
-		sink: sink,
-		in:   make(chan *event.Event, buffer),
-		drop: dropOnFull,
-		log:  log.With("output", sink.Name()),
+		sink:    sink,
+		in:      make(chan *event.Event, buffer),
+		drop:    dropOnFull,
+		log:     log.With("output", sink.Name()),
+		metrics: noopSink{},
 	}
 }
+
+// SetMetricsSink installs the metrics sink. Safe to call before Run; a
+// nil sink leaves the default no-op in place.
+func (c *Consumer) SetMetricsSink(s MetricsSink) {
+	if s == nil {
+		c.metrics = noopSink{}
+		return
+	}
+	c.metrics = s
+}
+
+// QueueDepth returns the instantaneous number of buffered events for the
+// metrics package's queue-depth collector.
+func (c *Consumer) QueueDepth() int { return len(c.in) }
+
+// QueueCapacity returns the channel's capacity (constant).
+func (c *Consumer) QueueCapacity() int { return cap(c.in) }
 
 // Submit enqueues an event. When the consumer is configured to drop on full
 // and the queue is saturated, the event is discarded and the dropped counter
@@ -67,6 +106,7 @@ func (c *Consumer) Submit(ev *event.Event) {
 		case c.in <- ev:
 		default:
 			c.dropped.Add(1)
+			c.metrics.IncrOutputDropped(c.sink.Name())
 		}
 		return
 	}
@@ -112,17 +152,25 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
-// writeOne writes one event to the sink and reports failures.
+// writeOne writes one event to the sink, records latency and reports
+// failures.
 //
 // Sentry capture is intentionally throttled: a write error on a busy
 // stream can fire on every event during an outage, so we only capture on
 // the transition from healthy to failing. Returning to healthy resets the
-// state so the next failure is captured again.
+// state so the next failure is captured again. The `output_failing` gauge
+// follows the same transition logic so dashboards can light up red while
+// the outage lasts.
 func (c *Consumer) writeOne(ev *event.Event) {
-	if err := c.sink.Write(ev); err != nil {
+	start := time.Now()
+	err := c.sink.Write(ev)
+	c.metrics.ObserveOutputWrite(c.sink.Name(), time.Since(start))
+	if err != nil {
 		c.errors.Add(1)
+		c.metrics.IncrOutputError(c.sink.Name())
 		c.log.Error("write failed", "err", err)
 		if !c.failing.Swap(true) {
+			c.metrics.SetOutputFailing(c.sink.Name(), true)
 			sentryx.Report(err,
 				"stage", "output.write",
 				"output", c.sink.Name(),
@@ -132,7 +180,10 @@ func (c *Consumer) writeOne(ev *event.Event) {
 		return
 	}
 	c.written.Add(1)
-	c.failing.Store(false)
+	c.metrics.IncrOutputWritten(c.sink.Name())
+	if c.failing.Swap(false) {
+		c.metrics.SetOutputFailing(c.sink.Name(), false)
+	}
 }
 
 // drainAfterShutdown writes any events buffered in the channel using a short
@@ -143,9 +194,14 @@ func (c *Consumer) drainAfterShutdown() {
 	for {
 		select {
 		case ev := <-c.in:
-			if err := c.sink.Write(ev); err != nil {
+			start := time.Now()
+			err := c.sink.Write(ev)
+			c.metrics.ObserveOutputWrite(c.sink.Name(), time.Since(start))
+			if err != nil {
 				c.errors.Add(1)
+				c.metrics.IncrOutputError(c.sink.Name())
 				if !c.failing.Swap(true) {
+					c.metrics.SetOutputFailing(c.sink.Name(), true)
 					sentryx.Report(err,
 						"stage", "output.write.shutdown",
 						"output", c.sink.Name(),
@@ -155,7 +211,10 @@ func (c *Consumer) drainAfterShutdown() {
 				return
 			}
 			c.written.Add(1)
-			c.failing.Store(false)
+			c.metrics.IncrOutputWritten(c.sink.Name())
+			if c.failing.Swap(false) {
+				c.metrics.SetOutputFailing(c.sink.Name(), false)
+			}
 		case <-deadline.C:
 			return
 		default:

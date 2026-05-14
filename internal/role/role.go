@@ -52,10 +52,20 @@ type Options struct {
 }
 
 // MetricsSink is implemented by metrics.Registry so the role Checker can
-// publish role changes without depending on the metrics package directly.
+// publish role changes and probe statistics without depending on the
+// metrics package directly. RecordRoleProbe is optional and probed via a
+// type assertion below to keep this interface backwards-compatible.
 type MetricsSink interface {
 	SetRedisRole(role string)
 	RecordRoleTransition(from, to string)
+}
+
+// ProbeMetricsSink is the optional extension that publishes probe-level
+// telemetry (outcome + latency). metrics.Registry implements it. The
+// Checker checks for it via type assertion so test fakes can opt in
+// individually.
+type ProbeMetricsSink interface {
+	RecordRoleProbe(success bool, d time.Duration)
 }
 
 // Checker periodically probes Redis for its replication role and notifies
@@ -199,13 +209,18 @@ func (c *Checker) probeOnce(ctx context.Context) {
 	sentryx.SetSpanData(spanCtx, "redis_address", c.opts.Address)
 	sentryx.SetSpanData(spanCtx, "redis_network", c.opts.Network)
 
+	start := time.Now()
 	role, err := c.queryRole(spanCtx)
+	dur := time.Since(start)
 	finish(err)
+	if pm, ok := c.metrics.(ProbeMetricsSink); ok {
+		pm.RecordRoleProbe(err == nil, dur)
+	}
 	if err != nil {
 		c.mu.Lock()
 		c.probeErr = err
 		c.mu.Unlock()
-		c.log.Warn("role probe failed", "err", err)
+		c.log.Warn("role probe failed", "err", err, "duration", dur)
 		sentryx.Capture(spanCtx, err,
 			"stage", "role.probe",
 			"redis_address", c.opts.Address,

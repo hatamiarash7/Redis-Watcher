@@ -52,11 +52,26 @@ func (a Alert) Renderer() string {
 	return sb.String()
 }
 
-// Reporter is invoked for per-channel send errors (e.g. to bump a counter).
+// Reporter is the metrics callback surface for the alert engine. The
+// metrics.Registry implements every method; older callers that only had
+// AlertSent / AlertError / SuspiciousObserved are still compatible
+// because the Engine guards every optional method behind a nil check via
+// the helper methods at the bottom of this file.
 type Reporter interface {
 	AlertSent(channel, command string)
 	AlertError(channel string, err error)
 	SuspiciousObserved(command, sourceIP string)
+}
+
+// RetryReporter is an optional extension implemented by Reporters that
+// want per-retry visibility (count + outcome + duration). It is consulted
+// via a type-assert so legacy Reporter implementations remain valid.
+type RetryReporter interface {
+	AlertRetry(channel string)
+	AlertDropped()
+	AlertRateLimited(command string)
+	ObserveAlertSend(channel string, d time.Duration)
+	SetAlertChannelFailing(channel string, failing bool)
 }
 
 // Engine is the central rule evaluator that fan-outs matching events to all
@@ -185,11 +200,19 @@ func (e *Engine) Submit(ev *event.Event) {
 		case e.in <- ev:
 		default:
 			e.dropped++
+			e.recordDropped()
 		}
 		return
 	}
 	e.in <- ev
 }
+
+// QueueDepth returns the instantaneous number of buffered alerts for the
+// metrics package's queue-depth collector.
+func (e *Engine) QueueDepth() int { return len(e.in) }
+
+// QueueCapacity returns the channel's capacity.
+func (e *Engine) QueueCapacity() int { return cap(e.in) }
 
 // Run drains the queue until ctx is done.
 func (e *Engine) Run(ctx context.Context) error {
@@ -217,6 +240,7 @@ func (e *Engine) handle(ctx context.Context, ev *event.Event) {
 	}
 	if !e.rateLimitAllow(ev) {
 		e.log.Debug("alert rate limited", "cmd", ev.Command, "ip", ev.Source.IP)
+		e.recordRateLimited(ev.Command)
 		return
 	}
 
@@ -273,9 +297,11 @@ func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Eve
 	attempts := 0
 	for attempt := 1; attempt <= e.retryMax; attempt++ {
 		attempts = attempt
+		sendStart := time.Now()
 		sendCtx, cancel := context.WithTimeout(spanCtx, e.timeout)
 		err := ch.Send(sendCtx, a)
 		cancel()
+		e.recordSendDuration(ch.Name(), time.Since(sendStart))
 
 		if err == nil {
 			sentryx.SetSpanData(spanCtx, "attempts", attempt)
@@ -283,6 +309,7 @@ func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Eve
 			if e.rep != nil {
 				e.rep.AlertSent(ch.Name(), ev.Command)
 			}
+			e.recordChannelFailing(ch.Name(), false)
 			if attempt > 1 {
 				e.log.Info("alert recovered after retry",
 					"channel", ch.Name(),
@@ -309,6 +336,7 @@ func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Eve
 			lastErr = fmt.Errorf("retry aborted: %w", ctx.Err())
 			break
 		}
+		e.recordRetry(ch.Name())
 		backoff = nextBackoff(backoff, e.retryMaxBackoff)
 	}
 
@@ -318,6 +346,7 @@ func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Eve
 		"channel", ch.Name(),
 		"attempts", attempts,
 		"err", lastErr)
+	e.recordChannelFailing(ch.Name(), true)
 	sentryx.Capture(spanCtx, lastErr,
 		"channel", ch.Name(),
 		"attempts", attempts,
@@ -328,6 +357,39 @@ func (e *Engine) sendOne(ctx context.Context, ch Channel, a Alert, ev *event.Eve
 		"reason", a.Reason,
 	)
 	return lastErr
+}
+
+// recordRetry / recordRateLimited / etc. are thin guards around the
+// optional RetryReporter interface. They keep the hot paths above free
+// of explicit type assertions.
+func (e *Engine) recordRetry(channel string) {
+	if r, ok := e.rep.(RetryReporter); ok {
+		r.AlertRetry(channel)
+	}
+}
+
+func (e *Engine) recordDropped() {
+	if r, ok := e.rep.(RetryReporter); ok {
+		r.AlertDropped()
+	}
+}
+
+func (e *Engine) recordRateLimited(command string) {
+	if r, ok := e.rep.(RetryReporter); ok {
+		r.AlertRateLimited(command)
+	}
+}
+
+func (e *Engine) recordSendDuration(channel string, d time.Duration) {
+	if r, ok := e.rep.(RetryReporter); ok {
+		r.ObserveAlertSend(channel, d)
+	}
+}
+
+func (e *Engine) recordChannelFailing(channel string, failing bool) {
+	if r, ok := e.rep.(RetryReporter); ok {
+		r.SetAlertChannelFailing(channel, failing)
+	}
 }
 
 // sleepWithContext sleeps for d unless ctx fires first. Returns false if

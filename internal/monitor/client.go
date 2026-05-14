@@ -57,15 +57,38 @@ type Gate interface {
 	Subscribe() (<-chan struct{}, func())
 }
 
+// MetricsSink is implemented by metrics.Registry. The Client uses it to
+// publish connection state, event freshness, dropped/parse/reconnect
+// counters and per-session lifetime. The package-internal noopSink keeps
+// the Client useful in tests and in barebones builds.
+type MetricsSink interface {
+	SetMonitorConnected(connected bool)
+	ObserveLastEvent(t time.Time)
+	ObserveMonitorSession(d time.Duration)
+	IncrParseError()
+	IncrReconnect()
+	IncrMonitorDropped()
+}
+
+type noopSink struct{}
+
+func (noopSink) SetMonitorConnected(bool)            {}
+func (noopSink) ObserveLastEvent(time.Time)          {}
+func (noopSink) ObserveMonitorSession(time.Duration) {}
+func (noopSink) IncrParseError()                     {}
+func (noopSink) IncrReconnect()                      {}
+func (noopSink) IncrMonitorDropped()                 {}
+
 // Client repeatedly connects to Redis, issues MONITOR, parses the resulting
 // stream and emits Events.
 type Client struct {
-	opts   Options
-	log    *slog.Logger
-	out    chan<- *event.Event
-	report ErrorReporter
-	drop   bool
-	gate   Gate
+	opts    Options
+	log     *slog.Logger
+	out     chan<- *event.Event
+	report  ErrorReporter
+	metrics MetricsSink
+	drop    bool
+	gate    Gate
 
 	dropped atomic.Uint64
 	parseEr atomic.Uint64
@@ -86,7 +109,7 @@ func New(opts Options, out chan<- *event.Event, log *slog.Logger, report ErrorRe
 	if opts.BackoffMax < opts.BackoffMin {
 		opts.BackoffMax = 30 * time.Second
 	}
-	return &Client{opts: opts, log: log, out: out, report: report, drop: dropOnFull}
+	return &Client{opts: opts, log: log, out: out, report: report, metrics: noopSink{}, drop: dropOnFull}
 }
 
 // SetGate installs a Gate. When set, Run blocks while the gate is inactive
@@ -94,6 +117,25 @@ func New(opts Options, out chan<- *event.Event, log *slog.Logger, report ErrorRe
 // MONITOR connection on every transition so the next iteration re-evaluates
 // the role. Pass nil to remove the gate.
 func (c *Client) SetGate(g Gate) { c.gate = g }
+
+// SetMetricsSink installs the metrics sink. Safe to call before Run; a
+// nil sink leaves the default no-op in place.
+func (c *Client) SetMetricsSink(s MetricsSink) {
+	if s == nil {
+		c.metrics = noopSink{}
+		return
+	}
+	c.metrics = s
+}
+
+// QueueDepth reports the current number of buffered events awaiting
+// dispatch. Used by the metrics package's queue-depth collector. Returns
+// the channel cap as the second value so the collector can also report
+// utilization.
+func (c *Client) QueueDepth() int { return len(c.out) }
+
+// QueueCapacity returns the channel capacity (constant).
+func (c *Client) QueueCapacity() int { return cap(c.out) }
 
 // Stats reports counters exposed for metrics or logging.
 type Stats struct {
@@ -131,6 +173,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		if !first {
 			c.recon.Add(1)
+			c.metrics.IncrReconnect()
 		}
 		first = false
 
@@ -228,6 +271,13 @@ func (c *Client) runOnce(ctx context.Context) error {
 		"network", c.opts.Network,
 		"address", redact(c.opts.Address))
 
+	c.metrics.SetMonitorConnected(true)
+	sessionStart := time.Now()
+	defer func() {
+		c.metrics.SetMonitorConnected(false)
+		c.metrics.ObserveMonitorSession(time.Since(sessionStart))
+	}()
+
 	return c.readLoop(ctx, conn, r)
 }
 
@@ -259,16 +309,20 @@ func (c *Client) readLoop(ctx context.Context, conn net.Conn, r *bufio.Reader) e
 		ev, perr := Parse(line)
 		if perr != nil {
 			c.parseEr.Add(1)
+			c.metrics.IncrParseError()
 			c.log.Debug("monitor parse error", "err", perr, "line", strings.TrimSpace(line))
 			c.report(perr, "stage", "monitor_parse", "line", strings.TrimSpace(line))
 			continue
 		}
+
+		c.metrics.ObserveLastEvent(ev.Timestamp)
 
 		if c.drop {
 			select {
 			case c.out <- ev:
 			default:
 				c.dropped.Add(1)
+				c.metrics.IncrMonitorDropped()
 			}
 		} else {
 			select {

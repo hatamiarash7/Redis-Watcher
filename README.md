@@ -21,7 +21,13 @@ generic webhooks, Prometheus Pushgateway).
   - rotated **file** (lumberjack)
   - **stdout** (JSON or text)
   - **UDP/TCP** forwarder (Fluent Bit, Fluentd, syslog, …)
-- **Prometheus metrics** (commands, per-IP, per-DB, alerts, drops, reconnects)
+- **Prometheus metrics** with deep operational insight — health gauges
+  (`monitor_connected`, `output_failing`, `alert_channel_failing`),
+  freshness gauges (`last_event_timestamp_seconds`), latency histograms
+  (alert send / output write / role probe), pipeline-depth gauges,
+  per-channel retry/drop/rate-limit counters, and the Go runtime +
+  process collectors. `/healthz` is a pure liveness probe; `/readyz`
+  fail-closes on degraded state
 - **Alerts** on suspicious commands (`FLUSH*`, `CONFIG`, `ACL`, `KEYS`,
   `EVAL`, `SCRIPT`, `SHUTDOWN`, `DEBUG`, …) with per-(command, IP) rate
   limiting and **per-channel retry with exponential backoff** (configurable
@@ -105,19 +111,19 @@ commented example.
 
 ### Useful environment variables
 
-| Variable                                  | Purpose                              |
-|-------------------------------------------|--------------------------------------|
-| `REDIS_WATCHER_CONFIG`                    | Path to the config file              |
-| `REDIS_WATCHER_REDIS_NETWORK`             | `unix` or `tcp`                      |
-| `REDIS_WATCHER_REDIS_ADDRESS`             | Socket path or `host:port`           |
-| `REDIS_WATCHER_REDIS_PASSWORD`            | AUTH password (avoid checking-in)    |
-| `REDIS_WATCHER_LOG_LEVEL`                 | `debug`, `info`, `warn`, `error`     |
-| `REDIS_WATCHER_METRICS_ADDRESS`           | `host:port` to expose metrics on     |
-| `REDIS_WATCHER_SENTRY_DSN`                | Sentry DSN                           |
-| `REDIS_WATCHER_ALERTS_TELEGRAM_BOT_TOKEN` | Telegram bot token                   |
-| `REDIS_WATCHER_ALERTS_TELEGRAM_CHAT_ID`   | Telegram chat ID                     |
-| `REDIS_WATCHER_ALERTS_WEBHOOK_URL`        | Webhook URL                          |
-| `REDIS_WATCHER_ALERTS_PUSHGATEWAY_URL`    | Pushgateway URL                      |
+| Variable                                  | Purpose                           |
+| ----------------------------------------- | --------------------------------- |
+| `REDIS_WATCHER_CONFIG`                    | Path to the config file           |
+| `REDIS_WATCHER_REDIS_NETWORK`             | `unix` or `tcp`                   |
+| `REDIS_WATCHER_REDIS_ADDRESS`             | Socket path or `host:port`        |
+| `REDIS_WATCHER_REDIS_PASSWORD`            | AUTH password (avoid checking-in) |
+| `REDIS_WATCHER_LOG_LEVEL`                 | `debug`, `info`, `warn`, `error`  |
+| `REDIS_WATCHER_METRICS_ADDRESS`           | `host:port` to expose metrics on  |
+| `REDIS_WATCHER_SENTRY_DSN`                | Sentry DSN                        |
+| `REDIS_WATCHER_ALERTS_TELEGRAM_BOT_TOKEN` | Telegram bot token                |
+| `REDIS_WATCHER_ALERTS_TELEGRAM_CHAT_ID`   | Telegram chat ID                  |
+| `REDIS_WATCHER_ALERTS_WEBHOOK_URL`        | Webhook URL                       |
+| `REDIS_WATCHER_ALERTS_PUSHGATEWAY_URL`    | Pushgateway URL                   |
 
 ## Sentinel-aware role detection
 
@@ -194,28 +200,100 @@ can still verify the filter is doing what you expect.
 ## Prometheus metrics
 
 All metrics are exposed at `/metrics` on the configured `metrics.address`
-(default `:9100`). Notable series:
+(default `:9100`). The same handler also serves `go_*` (Go runtime) and
+`redis_watcher_process_*` (process collector, RSS / CPU / FDs) so a
+single scrape gives you a full health picture without a node-exporter
+sidecar.
 
-| Metric                                          | Type    | Labels                                |
-|-------------------------------------------------|---------|---------------------------------------|
-| `redis_watcher_commands_total`                  | counter | `command`, `db`                       |
-| `redis_watcher_commands_by_ip_total`            | counter | `command`, `source_ip`                |
-| `redis_watcher_commands_by_db_total`            | counter | `db`                                  |
-| `redis_watcher_suspicious_commands_total`       | counter | `command`, `source_ip`                |
-| `redis_watcher_alerts_sent_total`               | counter | `channel`, `command`                  |
-| `redis_watcher_alert_send_errors_total`         | counter | `channel`                             |
-| `redis_watcher_dropped_events_total`            | counter | `consumer`                            |
-| `redis_watcher_ignored_events_total`            | counter | `command`                             |
-| `redis_watcher_monitor_reconnects_total`        | counter | —                                     |
-| `redis_watcher_parse_errors_total`              | counter | —                                     |
-| `redis_watcher_events_processed_total`          | counter | —                                     |
-| `redis_watcher_build_info`                      | gauge   | `version`, `commit`                   |
-| `redis_watcher_redis_is_master`                 | gauge   | —                                     |
-| `redis_watcher_redis_role_info`                 | gauge   | `role`                                |
-| `redis_watcher_redis_role_transitions_total`    | counter | `from`, `to`                          |
+### Health gauges (primary alert sources)
 
-Health endpoints `/healthz` and `/readyz` are also exposed for liveness /
-readiness probes.
+| Metric                                            | Type  | Labels              | What to alert on                                         |
+| ------------------------------------------------- | ----- | ------------------- | -------------------------------------------------------- |
+| `redis_watcher_monitor_connected`                 | gauge | —                   | `== 0 for 1m` → MONITOR session down                     |
+| `redis_watcher_last_event_timestamp_seconds`      | gauge | —                   | `time() - this > expected_idle` → ingest stalled         |
+| `redis_watcher_last_role_probe_timestamp_seconds` | gauge | —                   | `time() - this > 2 * role_check.interval` → probe stuck  |
+| `redis_watcher_redis_is_master`                   | gauge | —                   | `== 0` → upstream failed over to replica                 |
+| `redis_watcher_output_failing`                    | gauge | `output`            | `== 1` → that output is broken right now                 |
+| `redis_watcher_alert_channel_failing`             | gauge | `channel`           | `== 1` → that channel cannot deliver alerts              |
+| `redis_watcher_start_time_seconds`                | gauge | —                   | `time() - this < 60` after expected start = restart loop |
+| `redis_watcher_build_info`                        | gauge | `version`, `commit` | use as info series in dashboards                         |
+| `redis_watcher_redis_role_info`                   | gauge | `role`              | dashboard breakdown of replication role                  |
+
+### Throughput counters
+
+| Metric                                       | Type    | Labels                 |
+| -------------------------------------------- | ------- | ---------------------- |
+| `redis_watcher_events_processed_total`       | counter | —                      |
+| `redis_watcher_commands_total`               | counter | `command`, `db`        |
+| `redis_watcher_commands_by_ip_total`         | counter | `command`, `source_ip` |
+| `redis_watcher_commands_by_db_total`         | counter | `db`                   |
+| `redis_watcher_suspicious_commands_total`    | counter | `command`, `source_ip` |
+| `redis_watcher_ignored_events_total`         | counter | `command`              |
+| `redis_watcher_output_written_total`         | counter | `output`               |
+| `redis_watcher_alerts_sent_total`            | counter | `channel`, `command`   |
+| `redis_watcher_redis_role_transitions_total` | counter | `from`, `to`           |
+
+### Error / drop counters
+
+| Metric                                       | Type    | Labels     | Meaning                                                       |
+| -------------------------------------------- | ------- | ---------- | ------------------------------------------------------------- |
+| `redis_watcher_parse_errors_total`           | counter | —          | MONITOR line couldn't be parsed                               |
+| `redis_watcher_monitor_reconnects_total`     | counter | —          | one per MONITOR reconnect attempt                             |
+| `redis_watcher_monitor_dropped_events_total` | counter | —          | events dropped at the MONITOR→dispatcher boundary             |
+| `redis_watcher_dropped_events_total`         | counter | `consumer` | events dropped at the dispatcher→output boundary (per output) |
+| `redis_watcher_output_errors_total`          | counter | `output`   | `Sink.Write` returned an error                                |
+| `redis_watcher_alert_send_errors_total`      | counter | `channel`  | one per failed `channel.Send` attempt (incl. each retry)      |
+| `redis_watcher_alert_retry_attempts_total`   | counter | `channel`  | times the engine slept and tried again                        |
+| `redis_watcher_alert_dropped_total`          | counter | —          | alerts dropped because the engine buffer was full             |
+| `redis_watcher_alert_rate_limited_total`     | counter | `command`  | alerts suppressed by the per-(command, source_ip) limiter     |
+| `redis_watcher_role_probe_failures_total`    | counter | —          | INFO replication probe failed                                 |
+| `redis_watcher_role_probe_successes_total`   | counter | —          | INFO replication probe succeeded                              |
+
+### Latency histograms
+
+| Metric                                           | Type      | Labels    | Buckets summary                             |
+| ------------------------------------------------ | --------- | --------- | ------------------------------------------- |
+| `redis_watcher_output_write_duration_seconds`    | histogram | `output`  | 100µs … 5s (covers stdout to slow TCP)      |
+| `redis_watcher_alert_send_duration_seconds`      | histogram | `channel` | 5ms … 10s (one bucket per realistic SLO)    |
+| `redis_watcher_role_probe_duration_seconds`      | histogram | —         | 1ms … 5s                                    |
+| `redis_watcher_monitor_session_duration_seconds` | histogram | —         | 1s … 1d (short sessions = Redis kicking us) |
+
+### Pipeline depth (back-pressure)
+
+`redis_watcher_queue_depth{queue}` and `redis_watcher_queue_capacity{queue}`
+are exposed by a custom collector that reads `len()` and `cap()` of each
+internal channel on every scrape. Queues:
+
+- `events` — MONITOR → dispatcher
+- `output:<name>` — dispatcher → each output consumer
+- `alerts` — dispatcher → alert engine
+
+> The healthy pattern is `depth / capacity` staying close to 0. A sustained
+> ratio above ~0.5 means the consumer is too slow; >0.9 means drops are
+> imminent.
+
+### Process + Go runtime
+
+The standard collectors are wired in:
+
+- `go_goroutines`, `go_memstats_*`, `go_gc_duration_seconds`, `go_sched_*`
+- `redis_watcher_process_resident_memory_bytes`,
+  `redis_watcher_process_cpu_seconds_total`,
+  `redis_watcher_process_open_fds`, etc.
+
+### Health endpoints
+
+- `GET /healthz` — always 200 while the HTTP server is alive. Use as a
+  Kubernetes **liveness** probe (don't fail it on transient downstream
+  outages or you'll restart-loop yourself).
+- `GET /readyz` — returns 503 with a JSON body when any of the following
+  is true:
+  - MONITOR is not currently connected,
+  - the role checker has not yet determined the role,
+  - any output is currently in a failing state,
+  - any alert channel is currently in a failing state.
+  Use as a Kubernetes **readiness** probe and as the gate for blue/green
+  promotions.
 
 > [!warning]
 > If you operate Redis with many client IPs, set `metrics.track_source_ip: false` to keep per-command time series cardinality bounded.
@@ -242,7 +320,7 @@ engine sleeps for `initial_backoff`, doubles on every subsequent failure
 wait is context-aware, so shutdowns abort retries promptly.
 
 - `max_attempts` counts the initial try (`1` = no retries, `3` = initial
-  + up to 2 retries). Defaults to `3`.
+  - up to 2 retries). Defaults to `3`.
 - Initial / max backoff default to `500ms` / `5s`.
 - `redis_watcher_alert_send_errors_total` bumps once **per failed
   attempt** so dashboards visibly react to retry storms.
@@ -268,10 +346,18 @@ REDIS_WATCHER_ALERTS_RETRY_MAX_BACKOFF=30s
 - [ ] Set `metrics.track_source_ip: false` if clients use many IPs.
 - [ ] Keep `pipeline.drop_on_full: true`. Back-pressuring `MONITOR` causes
       Redis to drop the watcher.
-- [ ] Scrape `/metrics`, alert on:
-      `rate(redis_watcher_dropped_events_total[5m])`,
-      `rate(redis_watcher_monitor_reconnects_total[5m]) > 0`,
-      `rate(redis_watcher_suspicious_commands_total[5m])`.
+- [ ] Scrape `/metrics`. Suggested alerts:
+      - `redis_watcher_monitor_connected == 0 for 1m` (ingest down)
+      - `time() - redis_watcher_last_event_timestamp_seconds > 60`
+        (ingest stalled even though we think we're connected)
+      - `max by (output) (redis_watcher_output_failing) == 1 for 5m`
+      - `max by (channel) (redis_watcher_alert_channel_failing) == 1`
+      - `rate(redis_watcher_dropped_events_total[5m]) > 0`
+      - `rate(redis_watcher_monitor_dropped_events_total[5m]) > 0`
+      - `histogram_quantile(0.99, rate(redis_watcher_alert_send_duration_seconds_bucket[5m])) > 2`
+      - `rate(redis_watcher_suspicious_commands_total[5m]) > 0`
+- [ ] Use `/readyz` (not `/healthz`) as the readiness probe in
+      Kubernetes / blue-green deployers.
 - [ ] Configure Sentry. Errors are captured automatically for every
       subsystem (monitor connection, role probes, alert sends, output
       writes, /metrics handlers). For performance tracing set

@@ -116,6 +116,21 @@ outputs:
     keepalive: 30s
 
 # ---- Prometheus metrics endpoint ---------------------------------------------
+# The HTTP server exposes:
+#   GET <path>      Prometheus exposition (Go runtime + process + project metrics)
+#   GET /healthz    Liveness probe (always 200 while the process is up). Use as
+#                   the Kubernetes liveness probe — must NEVER fail-close on
+#                   transient downstream outages, or the pod restart-loops.
+#   GET /readyz     Readiness probe. Returns 503 with a JSON body when any of:
+#                     * MONITOR is not currently connected, or
+#                     * the role checker hasn't determined the role, or
+#                     * any output is currently in a failing state, or
+#                     * any alert channel is currently in a failing state.
+#                   Use as the Kubernetes readiness probe / blue-green gate.
+#
+# See README -> "Prometheus metrics" for the full catalogue (health gauges,
+# throughput counters, error counters, latency histograms, queue depth gauges,
+# Go runtime + process collectors).
 metrics:
   enabled: true
   address: ":9100"
