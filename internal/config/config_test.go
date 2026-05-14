@@ -165,6 +165,71 @@ func TestTelegramThreadIDFromEnv(t *testing.T) {
 	}
 }
 
+func TestPushgatewayURLsFromYAML(t *testing.T) {
+	path := writeTempConfig(t, `
+redis:
+  network: tcp
+  address: 127.0.0.1:6379
+alerts:
+  enabled: true
+  pushgateway:
+    enabled: true
+    urls:
+      - http://pg-a:9091
+      - http://pg-b:9091
+    username: alice
+    password: secret
+    job: redis-watcher
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Alerts.Pushgateway.URLs; len(got) != 2 || got[0] != "http://pg-a:9091" || got[1] != "http://pg-b:9091" {
+		t.Errorf("urls: %v", got)
+	}
+	if cfg.Alerts.Pushgateway.Username != "alice" || cfg.Alerts.Pushgateway.Password != "secret" {
+		t.Errorf("creds: %q/%q", cfg.Alerts.Pushgateway.Username, cfg.Alerts.Pushgateway.Password)
+	}
+}
+
+func TestPushgatewayURLsFromEnv(t *testing.T) {
+	t.Setenv("REDIS_WATCHER_ALERTS_PUSHGATEWAY_URLS", "http://pg-a:9091, http://pg-b:9091 ,")
+	t.Setenv("REDIS_WATCHER_ALERTS_PUSHGATEWAY_USERNAME", "bob")
+	t.Setenv("REDIS_WATCHER_ALERTS_PUSHGATEWAY_PASSWORD", "p4ss")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Alerts.Pushgateway.URLs; len(got) != 2 || got[0] != "http://pg-a:9091" || got[1] != "http://pg-b:9091" {
+		t.Errorf("urls from env not split / trimmed correctly: %v", got)
+	}
+	if cfg.Alerts.Pushgateway.Username != "bob" || cfg.Alerts.Pushgateway.Password != "p4ss" {
+		t.Errorf("env creds: %q/%q", cfg.Alerts.Pushgateway.Username, cfg.Alerts.Pushgateway.Password)
+	}
+}
+
+func TestPushgatewayRejectsEmptyURLs(t *testing.T) {
+	c := Default()
+	c.Alerts.Enabled = true
+	c.Alerts.Pushgateway.Enabled = true
+	c.Alerts.Pushgateway.URLs = nil
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error when pushgateway enabled without urls")
+	}
+}
+
+func TestPushgatewayRejectsBlankURL(t *testing.T) {
+	c := Default()
+	c.Alerts.Enabled = true
+	c.Alerts.Pushgateway.Enabled = true
+	c.Alerts.Pushgateway.URLs = []string{"http://valid:9091", "   "}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for blank URL entry")
+	}
+}
+
 func TestTelegramEndpointFromYAML(t *testing.T) {
 	path := writeTempConfig(t, `
 redis:

@@ -322,11 +322,14 @@ func buildAlertEngine(cfg *config.Config, reg *metrics.Registry, log *slog.Logge
 			cfg.Alerts.Webhook.Timeout))
 	}
 	if cfg.Alerts.Pushgateway.Enabled {
-		channels = append(channels, alert.NewPushgatewayChannel(
-			cfg.Alerts.Pushgateway.URL,
-			cfg.Alerts.Pushgateway.Job,
-			cfg.Alerts.Pushgateway.Labels,
-			cfg.Alerts.Pushgateway.Timeout))
+		channels = append(channels, alert.NewPushgatewayChannel(alert.PushgatewayOptions{
+			URLs:     cfg.Alerts.Pushgateway.URLs,
+			Job:      cfg.Alerts.Pushgateway.Job,
+			Username: cfg.Alerts.Pushgateway.Username,
+			Password: cfg.Alerts.Pushgateway.Password,
+			Labels:   cfg.Alerts.Pushgateway.Labels,
+			Timeout:  cfg.Alerts.Pushgateway.Timeout,
+		}))
 	}
 	if len(channels) == 0 {
 		log.Warn("alerts.enabled but no channel is configured")

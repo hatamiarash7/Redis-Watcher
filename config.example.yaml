@@ -192,7 +192,16 @@ alerts:
 
   pushgateway:
     enabled: false
-    url: http://pushgateway:9091
+    # One or more Pushgateway base URLs. Every alert is pushed to all
+    # configured URLs in parallel — use this for HA across availability
+    # zones. Send fails only when every push fails.
+    urls:
+      - http://pushgateway:9091
+      # - http://pushgateway-secondary:9091
+    # Optional HTTP Basic Auth credentials. The same pair is used for
+    # every URL above.
+    username: ""
+    password: ""
     job: redis-watcher
     timeout: 5s
     # Additional grouping labels pushed with the metric

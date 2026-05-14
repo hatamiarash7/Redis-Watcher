@@ -162,11 +162,17 @@ type WebhookConfig struct {
 
 // PushgatewayConfig configures Prometheus Pushgateway notifications.
 type PushgatewayConfig struct {
-	Enabled bool              `yaml:"enabled"`
-	URL     string            `yaml:"url"`
-	Job     string            `yaml:"job"`
-	Timeout time.Duration     `yaml:"timeout"`
-	Labels  map[string]string `yaml:"labels"`
+	Enabled bool `yaml:"enabled"`
+	// URLs is the list of Pushgateway base URLs. Provide more than one for
+	// redundancy: every alert is pushed to all configured URLs in parallel.
+	URLs []string `yaml:"urls"`
+	// Username and Password, when set, are sent as HTTP Basic Auth on every
+	// push. The credentials are shared across every URL.
+	Username string            `yaml:"username"`
+	Password string            `yaml:"password"`
+	Job      string            `yaml:"job"`
+	Timeout  time.Duration     `yaml:"timeout"`
+	Labels   map[string]string `yaml:"labels"`
 }
 
 // SentryConfig configures error tracking.
@@ -337,8 +343,15 @@ func (c *Config) Validate() error {
 		if c.Alerts.Webhook.Enabled && c.Alerts.Webhook.URL == "" {
 			return errors.New("alerts.webhook requires url")
 		}
-		if c.Alerts.Pushgateway.Enabled && c.Alerts.Pushgateway.URL == "" {
-			return errors.New("alerts.pushgateway requires url")
+		if c.Alerts.Pushgateway.Enabled {
+			if len(c.Alerts.Pushgateway.URLs) == 0 {
+				return errors.New("alerts.pushgateway requires at least one url in `urls`")
+			}
+			for i, u := range c.Alerts.Pushgateway.URLs {
+				if strings.TrimSpace(u) == "" {
+					return fmt.Errorf("alerts.pushgateway.urls[%d] is empty", i)
+				}
+			}
 		}
 		if c.Alerts.Webhook.Enabled && c.Alerts.Webhook.Method == "" {
 			c.Alerts.Webhook.Method = "POST"
@@ -390,7 +403,9 @@ func (c *Config) Validate() error {
 //	REDIS_WATCHER_ALERTS_TELEGRAM_CHAT_ID
 //	REDIS_WATCHER_ALERTS_TELEGRAM_THREAD_ID
 //	REDIS_WATCHER_ALERTS_WEBHOOK_URL
-//	REDIS_WATCHER_ALERTS_PUSHGATEWAY_URL
+//	REDIS_WATCHER_ALERTS_PUSHGATEWAY_URLS      (comma-separated)
+//	REDIS_WATCHER_ALERTS_PUSHGATEWAY_USERNAME
+//	REDIS_WATCHER_ALERTS_PUSHGATEWAY_PASSWORD
 func applyEnv(c *Config) {
 	str := func(key string, dst *string) {
 		if v, ok := os.LookupEnv(envPrefix + key); ok {
@@ -411,6 +426,18 @@ func applyEnv(c *Config) {
 			}
 		}
 	}
+	sliceVar := func(key string, dst *[]string) {
+		if v, ok := os.LookupEnv(envPrefix + key); ok {
+			parts := strings.Split(v, ",")
+			out := parts[:0]
+			for _, p := range parts {
+				if s := strings.TrimSpace(p); s != "" {
+					out = append(out, s)
+				}
+			}
+			*dst = out
+		}
+	}
 
 	str("REDIS_NETWORK", &c.Redis.Network)
 	str("REDIS_ADDRESS", &c.Redis.Address)
@@ -428,5 +455,7 @@ func applyEnv(c *Config) {
 	str("ALERTS_TELEGRAM_CHAT_ID", &c.Alerts.Telegram.ChatID)
 	intVar("ALERTS_TELEGRAM_THREAD_ID", &c.Alerts.Telegram.ThreadID)
 	str("ALERTS_WEBHOOK_URL", &c.Alerts.Webhook.URL)
-	str("ALERTS_PUSHGATEWAY_URL", &c.Alerts.Pushgateway.URL)
+	sliceVar("ALERTS_PUSHGATEWAY_URLS", &c.Alerts.Pushgateway.URLs)
+	str("ALERTS_PUSHGATEWAY_USERNAME", &c.Alerts.Pushgateway.Username)
+	str("ALERTS_PUSHGATEWAY_PASSWORD", &c.Alerts.Pushgateway.Password)
 }
