@@ -3,7 +3,7 @@ module github.com/hatamiarash7/redis-watcher
 go 1.26.3
 
 require (
-	github.com/getsentry/sentry-go v0.46.2
+	github.com/getsentry/sentry-go v0.47.0
 	github.com/prometheus/client_golang v1.23.2
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
