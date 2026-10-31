@@ -34,6 +34,7 @@ Redis Watcher is a small, production-minded daemon that subscribes to a Redis se
     - [Retry (`alerts.retry`)](#retry-alertsretry)
   - [Production checklist](#production-checklist)
   - [Development](#development)
+    - [Manual traffic test](#manual-traffic-test)
   - [💛 Support](#-support)
   - [🤝 Contributing](#-contributing)
   - [🐛 Issues](#-issues)
@@ -338,6 +339,78 @@ make docker            # build the OCI image
 ```
 
 See [`Makefile`](Makefile) for the full list of targets.
+
+### Manual traffic test
+
+Use [`scripts/manual-test.sh`](scripts/manual-test.sh) to generate random Redis
+commands while you observe the Watcher. **Redis and the Watcher must already be
+running**; the script does not start, stop, or otherwise manage Docker containers.
+Run it on your host with **Bash**, **`redis-cli` with `-e` support**, and **GNU
+coreutils** (`timeout`, `od`, `sleep`) installed. On Debian/Ubuntu, `redis-tools`
+provides `redis-cli`.
+
+```bash
+# Use the TCP port published by docker-compose.yml: 127.0.0.1:6379, DB 0.
+bash scripts/manual-test.sh
+
+# More iterations, with a slower pace for watching audit events arrive.
+bash scripts/manual-test.sh --count 100 --interval 0.5
+
+# Alternatively, use the Compose bind-mounted Unix socket from the host.
+bash scripts/manual-test.sh --socket "$PWD/redis-socket/redis.sock"
+
+# Optional, harmless suspicious-command probes (may send real notifications).
+bash scripts/manual-test.sh --alerts
+
+bash scripts/manual-test.sh --help
+```
+
+By default, the script runs **60 random workload iterations**, pausing **0.2
+seconds** between iterations. Each iteration sends one or more commands using
+strings, hashes, lists, sets, sorted sets, or `PUBLISH`. Random messages include
+spaces, quotes, backslashes, and newlines to exercise the MONITOR parser's
+escaping. A `PUBLISH` reply of zero subscribers is normal; the command is still
+visible to MONITOR and no subscriber is required.
+
+The script prints each command and a unique `redis-watcher:manual:<random>`
+namespace, only writes/deletes its own five test keys, and bounds collection
+sizes. It assigns a **five-minute TTL** and deletes those exact keys on normal
+exit, error, or Ctrl+C; it never flushes a database or scans application keys.
+An uncatchable termination between collection creation and `EXPIRE` can leave
+that key behind. Each Redis invocation has a five-second timeout, and connection
+or Redis command errors cause a nonzero exit. Use `--port` or `--db` to override
+the local defaults; if you add password authentication, pass it through
+`REDISCLI_AUTH`, not command-line arguments. Use only against a development Redis
+instance, and keep pacing enabled: MONITOR adds overhead.
+
+To observe the test, check readiness before sending traffic, then compare metrics
+before and after the run:
+
+```bash
+curl --fail --max-time 5 http://localhost:9100/readyz
+curl --fail --max-time 5 -s http://localhost:9100/metrics \
+  | grep -E '^redis_watcher_(monitor_connected|events_processed_total|commands_total|parse_errors_total|.*dropped.*total)'
+```
+
+Expect `monitor_connected` to be `1`, processed/command counters to increase,
+and no increase in parse errors or dropped events at this modest load. Search
+your configured **audit output** for the printed namespace. With the example
+configuration, stdout audit output is **disabled** and events go to
+`/var/log/redis-watcher/audit.log` inside `rw-watcher` (the `audit-logs` volume):
+
+```bash
+docker compose exec redis-watcher tail -f /var/log/redis-watcher/audit.log
+# If you enable the stdout output instead:
+docker logs -f rw-watcher
+```
+
+`--alerts` additionally sends a no-write `EVAL` and a read-only `SCRIPT EXISTS`
+probe. These match the example suspicious-command list without running
+destructive operations like `FLUSHALL`, `CONFIG SET`, or `SHUTDOWN`. To receive
+notifications, enable and configure an alert channel; filtering, ignored source
+IPs, and rate limiting can suppress delivery. The script verifies Redis accepts
+the traffic, **not** that the Watcher processed it or delivered notifications;
+inspect the outputs and metrics to confirm that manually.
 
 ---
 
