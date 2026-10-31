@@ -67,32 +67,13 @@ Redis Watcher is a small, production-minded daemon that subscribes to a Redis se
 
 ## Architecture
 
-```text
-                        +--------------------+
-                        |   Redis (MONITOR)  |
-                        +---------+----------+
-                                  |
-                                  v
-                       +----------+----------+
-                       |  monitor.Client     |
-                       |  (RESP, reconnect)  |
-                       +----------+----------+
-                                  |
-                          events chan *Event
-                                  |
-                                  v
-                         +--------+--------+
-                         |   Dispatcher    |
-                         +--------+--------+
-                                  |
-        +-------------------------+-------------------------+
-        |                         |                         |
-        v                         v                         v
-+---------------+        +-----------------+        +-----------------+
-| Prom metrics  |        |    Outputs      |        |  Alert engine   |
-| /metrics:9100 |        | file/stdout/    |        |  Telegram /     |
-|               |        | UDP / TCP       |        |  Webhook / PGW  |
-+---------------+        +-----------------+        +-----------------+
+```mermaid
+flowchart TD
+    redis["Redis (MONITOR)"] --> monitor["monitor.Client<br/>RESP, reconnect"]
+    monitor -->|"events chan *Event"| dispatcher["Dispatcher"]
+    dispatcher --> metrics["Prometheus metrics<br/>/metrics on :9100"]
+    dispatcher --> outputs["Outputs<br/>File / stdout / UDP / TCP"]
+    dispatcher --> alerts["Alert engine<br/>Telegram / Webhook / Pushgateway"]
 ```
 
 Each sink runs in its own goroutine with a bounded buffered channel. When `pipeline.drop_on_full: true` (recommended), a slow downstream cannot back up the `MONITOR` consumer.
